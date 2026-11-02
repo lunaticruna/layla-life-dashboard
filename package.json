@@ -1,0 +1,23 @@
+{
+  "name": "layla-life-dashboard-zh",
+  "version": "0.2.3",
+  "private": true,
+  "type": "module",
+  "description": "Layla 中文生活看板：生活时间线、日记、梦境与可追踪的记忆回写",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "pack:zip": "node scripts/build.mjs && node scripts/pack.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:ui": "node tests/ui.mjs",
+    "serve": "node scripts/serve.mjs"
+  },
+  "dependencies": {
+    "@layla-network/sdk": "7.6.2"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}
