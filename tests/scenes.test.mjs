@@ -33,7 +33,7 @@ test('0.1 profiles gain scene defaults without losing plans, settings or archive
   p.plans[day] = { source: 'manual', nodes: templatePlan(day, p) };
   await f.store.putProfile(p); await f.store.putDoc({ id: 'old', characterId: character.id, day, kind: 'diary', createdAt: at(600), body: '旧日记', syncStatus: 'written', memoryId: 66 });
   const migrated = await f.store.getProfile(character.id);
-  assert.equal(migrated.schema, 2); assert.equal(migrated.settings.autoScene, true); assert.equal(migrated.settings.home, '旧住处'); assert.equal(migrated.state.energy, 42);
+  assert.equal(migrated.schema, 3); assert.equal(migrated.settings.autoScene, true); assert.equal(migrated.settings.home, '旧住处'); assert.equal(migrated.state.energy, 42);
   assert.deepEqual(migrated.plans, p.plans); assert.equal((await f.store.getDoc('old')).memoryId, 66); assert.equal(f.requests.length, 0);
 });
 

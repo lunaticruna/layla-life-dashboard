@@ -1,10 +1,10 @@
 # Layla Life Dashboard v0.2.3 — Atomic Export & Backup Format Specification
 # 生活手记 v0.2.3 全量生活记录导出与备份配套格式规范（原子级字典与记忆底座迁移指引）
 
-- **规范版本 (specVersion)**: `1.0.0`
+- **规范版本 (specVersion)**: `1.1.0`
 - **对应应用版本 (appVersion)**: `0.2.3`
-- **导出格式大版本 (exportVersion)**: `1.0.0`
-- **发布日期**: 2026-11-02
+- **导出格式大版本 (exportVersion)**: `1.1.0`
+- **发布日期**: 2026-11-05
 - **状态**: 权威发布 (Normative Specification)
 - **文档所有权**: Layla Life Dashboard Architecture & Standards Group
 
@@ -135,7 +135,8 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
   ├── manifest.json                  # 归档清单、版本、校验和与计数统计
   ├── profile.json                   # 角色核心资料、生活设置、生理状态、作息模板
   ├── schedules/
-  │   └── daily_facts.json           # 历史每日事实、唤醒/就寝标记、时间线事实集合
+  │   ├── daily_facts.json           # 历史每日事实、唤醒/就寝标记、时间线事实集合
+  │   └── plans.json                 # 独立日程全量规划（ll_plans）与局部区间变更审计记录
   ├── documents/
   │   └── documents.json             # 全量归档文稿（日记、梦境、反思、作品正文及摘要）
   ├── scenes/
@@ -155,8 +156,8 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 - **根容器骨架 (Root Container Skeleton)**:
   ```json
   {
-    "exportVersion": "1.0.0",
-    "specVersion": "1.0.0",
+    "exportVersion": "1.1.0",
+    "specVersion": "1.1.0",
     "appVersion": "0.2.3",
     "exportedAt": 1793613600000,
     "characterId": "life-demo-mio",
@@ -165,6 +166,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
     "manifest": {},
     "profile": {},
     "schedules": [],
+    "plans": [],
     "documents": [],
     "scenes": [],
     "runs": [],
@@ -188,21 +190,23 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 | JSON 路径 | 原始数据类型 | 必填性 | 枚举 / 格式 / 取值范围 | 业务含义与语义解释 | 记忆底座映射对齐 |
 |---|---|---|---|---|---|
-| `manifest.exportVersion` | `string` | **REQUIRED** | SemVer (如 `"1.0.0"`) | 导出文件格式的大版本号，用于升级兼容判定。 | `metadata.export_version` |
-| `manifest.specVersion` | `string` | **REQUIRED** | SemVer (如 `"1.0.0"`) | 本规范文档的遵循版本。 | `metadata.spec_version` |
+| `manifest.exportVersion` | `string` | **REQUIRED** | SemVer (如 `"1.1.0"`) | 导出文件格式的大版本号，用于升级兼容判定。 | `metadata.export_version` |
+| `manifest.specVersion` | `string` | **REQUIRED** | SemVer (如 `"1.1.0"`) | 本规范文档的遵循版本。 | `metadata.spec_version` |
 | `manifest.appVersion` | `string` | **REQUIRED** | SemVer (如 `"0.2.3"`) | 生成本备份文件的 Layla Life Dashboard 应用版本。 | `metadata.app_version` |
 | `manifest.exportedAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 ($>0$) | 备份生成的绝对时刻。 | Timestamp / `created_at` |
 | `manifest.characterId` | `string` | **REQUIRED** | 1–128 字符，URI 安全 | 当前导出数据的所属角色唯一 ID。 | Mem0: `agent_id`<br>Letta: Agent ID<br>Zep: `user_id` |
 | `manifest.characterName` | `string` | **REQUIRED** | 1–64 字符非空字符串 | 角色在导出时的显示名称。 | Agent Display Name |
 | `manifest.archiveMode` | `string` | **REQUIRED** | `"zip"` \| `"json_fallback"` | 实际封装打包采用的格式模式。 | `metadata.archive_mode` |
 | `manifest.recordCounts.profile` | `integer` | **REQUIRED** | 固定为 `1` | 包含的角色资料记录数。 | N/A (核对校验项) |
-| `manifest.recordCounts.schedules` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 包含的每日日程与事实记录条数。 | N/A (核对校验项) |
+| `manifest.recordCounts.schedules` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 包含的每日事实记录条数。 | N/A (核对校验项) |
+| `manifest.recordCounts.plans` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 包含的独立日程全天规划记录条数 (`ll_plans`)。 | N/A (核对校验项) |
 | `manifest.recordCounts.documents` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 导出的全量归档文稿篇数。 | N/A (核对校验项) |
 | `manifest.recordCounts.scenes` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 导出的历史微观生活场景总条数。 | N/A (核对校验项) |
 | `manifest.recordCounts.runs` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 导出的工作流运行历史日志总条数。 | N/A (核对校验项) |
 | `manifest.recordCounts.knowledgeGraphTriples` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 知识图谱三元组记录总条数。 | N/A (核对校验项) |
 | `manifest.recordCounts.knowledgeGraphEntities` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 知识图谱独立实体节点数。 | N/A (核对校验项) |
 | `manifest.recordCounts.nativeMemories` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 关联的 Layla 原生记忆快照总条数。 | N/A (核对校验项) |
+| `manifest.summary.planCount` | `integer` | **REQUIRED** | $\ge 0$ 整数 | 独立日程规划总条数摘要。 | N/A (核对校验项) |
 | `manifest.files[].path` | `string` | **CONDITIONALLY_REQUIRED** (ZIP 模式必填) | 相对路径字符串 | ZIP 内的子文件相对路径（如 `"profile.json"`）。 | 存储定位标识 |
 | `manifest.files[].sizeBytes` | `integer` | **CONDITIONALLY_REQUIRED** (ZIP 模式必填) | $\ge 0$ 字节整数 | 子文件解压后的原始字节大小。 | 完整性校验 |
 | `manifest.files[].sha256` | `string` | **CONDITIONALLY_REQUIRED** (ZIP 模式必填) | 64 位十六进制小写哈希 | 子文件内容的 SHA-256 校验和。 | 完整性防篡改 |
@@ -217,7 +221,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 | JSON 路径 | 原始数据类型 | 必填性 | 枚举 / 格式 / 取值范围 | 业务含义与语义解释 | 记忆底座映射对齐 |
 |---|---|---|---|---|---|
-| `profile.schema` | `integer` | **REQUIRED** | `2` | Profile 数据模型版本，当前固定为 2。 | `schema_version` |
+| `profile.schema` | `integer` | **REQUIRED** | `3` | Profile 数据模型版本，当前版本升级为 3（已完成 ll_plans 独立分表）。 | `schema_version` |
 | `profile.characterId` | `string` | **REQUIRED** | 1–128 字符 | 角色唯一标识符。 | `agent_id` / `user_id` |
 | `profile.name` | `string` | **REQUIRED** | 1–64 字符 | 角色名称。 | Persona 实体名称 |
 | `profile.createdAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 | 角色在小应用中的首次建档时间。 | `created_at` |
@@ -237,6 +241,16 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `profile.settings.background` | `boolean` | **REQUIRED** | `true` \| `false` | 是否开启后台生活整理守护进程。 | Configuration Flag |
 | `profile.settings.autoWrite` | `boolean` | **REQUIRED** | `true` \| `false` | 文稿生成后是否自动交还写入 Layla 原生长期记忆。 | Configuration Flag |
 | `profile.settings.syncCard` | `boolean` | **REQUIRED** | `true` \| `false` | 是否开启向角色卡实时状态块的无损双向同步。 | Configuration Flag |
+| `profile.settings.syncPrecision` | `string` | **REQUIRED** | `"halfhour"` \| `"node"` \| `"minute"` | 角色卡状态同步块时间粒度（默认 `"halfhour"`，抑制每分钟更新打碎 host 模型 prompt cache）。 | Cache Protection Policy |
+| `profile.settings.dayTypes` | `array<object>` | **REQUIRED** | 复合对象数组 | 作息类型原型配置清单（含相对权重、工作日/周末范围与 LLM 引导提示）。 | Schedule Archetypes |
+| `profile.settings.extraRules` | `string` | **OPTIONAL** | 0–1000 字符 | 注入计划生成与角色卡的自定义作息补充硬性规则。 | Schedule Prompt Rule |
+| `profile.settings.voiceRules` | `boolean` | **REQUIRED** | `true` \| `false` | 是否向角色卡注入第一人称口吻与交谈规范规则（默认 `true`）。 | Voice Prompt Rule |
+| `profile.settings.businessPriority` | `boolean` | **REQUIRED** | `true` \| `false` | 是否注入“正事优先”原则（用户任务具有最高优先级，默认 `true`）。 | Directive Policy |
+| `profile.settings.wokenBriefRule` | `boolean` | **REQUIRED** | `true` \| `false` | 是否在睡眠期间被唤醒时注入迷糊短应答口吻（默认 `true`）。 | Directive Policy |
+| `profile.settings.customVoiceRules` | `string` | **OPTIONAL** | 0–1000 字符 | 自定义补充的第一人称口吻规则文本。 | Custom Voice Rule |
+| `profile.settings.planAheadHour` | `integer` | **REQUIRED** | `0` – `23` (默认 `22`) | 晚间提前预生成次日计划的整点阈值小时。 | Scheduler Policy |
+| `profile.settings.tomorrowAfterHour` | `integer` | **REQUIRED** | `0` – `23` (默认 `18`) | 晚间角色卡同步块开始注入明日预览的起始整点阈值。 | Context Injection Policy |
+| `profile.settings.autoPlan` | `boolean` | **REQUIRED** | `true` \| `false` | 后台周期任务是否自动调用模型规划当日/次日日程（默认 `false`）。 | Scheduler Policy |
 | `profile.settings.memorySessionMode`| `string` | **REQUIRED** | `"isolated"` \| `"active"` | 记忆会话归档策略（独立会话 `life-archive-<id>` 还是绑定活跃会话）。 | Session Mode Policy |
 | `profile.settings.diaryHour` | `integer` | **REQUIRED** | `0` – `23` | 每日触发日记整理与回忆反思的整点小时。 | Scheduler Policy |
 | `profile.settings.dayType` | `string` | **OPTIONAL** | `""` \| `"工作日"` \| `"周末"` | 手动强制覆盖的当日作息类型。 | Schedule Category |
@@ -299,7 +313,41 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 ---
 
-### 4.4 `documents/documents.json` 字段字典
+### 4.4 `schedules/plans.json` 字段字典
+
+存储角色独立日日程全量规划记录（`ll_plans` 表数据）及局部区间变更审计历史（顶层为一个数组 `PlanRecord[]`）。
+
+| JSON 路径 | 原始数据类型 | 必填性 | 枚举 / 格式 / 取值范围 | 业务含义与语义解释 | 记忆底座映射对齐 |
+|---|---|---|---|---|---|
+| `[].id` | `string` | **REQUIRED** | `plan-<characterId>-<day>` | 独立日计划唯一主键。 | Schedule Plan ID |
+| `[].characterId` | `string` | **REQUIRED** | 1–128 字符 | 计划归属的角色 ID。 | `agent_id` |
+| `[].day` | `string` | **REQUIRED** | `"YYYY-MM-DD"` | 计划所对应的自然公历日期。 | Temporal Date Anchor |
+| `[].title` | `string` | **REQUIRED** | 1–100 字符 | 当日日程的核心主题/生活标题。 | Schedule Theme |
+| `[].mood` | `string` | **REQUIRED** | 1–50 字符 (如 `"平静"`, `"充实"`) | 当日预设的心情基调。 | Schedule Mood |
+| `[].dayType` | `string` | **REQUIRED** | 字符串 (如 `"restday"`, `"workday"`) | 该计划所选用的作息原型分类标识。 | DayType Category |
+| `[].source` | `string` | **REQUIRED** | `"generated"` \| `"template"` \| `"manual"` \| `"legacy"` | 该日程计划的生成来源。 | Provenance |
+| `[].hint` | `string` | **OPTIONAL** | 0–200 字符 | 生成该日程时用户或系统输入的特定安排提示。 | User Directive |
+| `[].generatedAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 | 该计划最初生成落库的时间戳。 | Created At |
+| `[].changes[]` | `array<object>` | **REQUIRED** | 审计对象数组 | 对该日日程执行的区间修改与动态调整历史流水。 | Change Audit Log |
+| `[].changes[].at` | `integer` | **REQUIRED** | Unix 毫秒时间戳 | 区间变更发生的精确时刻。 | Change Timestamp |
+| `[].changes[].start` | `string` | **REQUIRED** | `"HH:MM"` | 修改影响的起始时间点。 | Change Interval Start |
+| `[].changes[].end` | `string` | **REQUIRED** | `"HH:MM"` | 修改影响的截止时间点。 | Change Interval End |
+| `[].changes[].summary` | `string` | **REQUIRED** | 1–100 字符 | 变更插入的新活动概要。 | New Activity Summary |
+| `[].changes[].detail` | `string` | **OPTIONAL** | 字符串 | 变更活动的补充描述。 | Activity Detail |
+| `[].nodes[]` | `array<object>` | **REQUIRED** | 2–32 个有序节点 | 全天 00:00–24:00 连续无缝无重叠的完整节点列表。 | Daily Episodes Sequence |
+| `[].nodes[].id` | `string` | **REQUIRED** | 格式 `"<day>-<startMinute>"` | 节点唯一 ID。 | Episode Node ID |
+| `[].nodes[].start` | `string` \| `integer` | **REQUIRED** | `"HH:MM"` 或 `0`–`1440` | 节点开始时间（整日分钟或时钟格式）。 | Start Time |
+| `[].nodes[].end` | `string` \| `integer` | **REQUIRED** | `"HH:MM"` 或 `0`–`1440` | 节点结束时间（末节点为 24:00 / 1440）。 | End Time |
+| `[].nodes[].kind` | `string` | **REQUIRED** | `"sleep"` \| `"nap"` \| `"meal"` \| `"work"` \| `"study"` \| `"travel"` \| `"leisure"` \| `"rest"` | 节点活动类型枚举。 | Activity Category |
+| `[].nodes[].summary` | `string` | **REQUIRED** | 1–100 字符非空字符串 | 节点的活动概要描述。 | Activity Summary |
+| `[].nodes[].location` | `string` | **REQUIRED** | 1–80 字符 | 节点活动发生地点。 | Location |
+| `[].nodes[].scene` | `string` | **OPTIONAL** | 0–500 字符 | 节点附带的静态预设微观场景描述。 | Static Scene Prompt |
+| `[].nodes[].detail` | `string` | **OPTIONAL** | 0–500 字符 | 活动详细说明或备忘。 | Activity Detail |
+| `[].nodes[].source` | `string` | **REQUIRED** | `"generated"` \| `"template"` \| `"manual"` \| `"change"` | 节点生成或注入来源。 | Provenance |
+
+---
+
+### 4.5 `documents/documents.json` 字段字典
 
 存储角色沉淀的全量长期归档文稿（日记、梦境、反思、作品）（顶层为数组 `Document[]`）。
 
@@ -328,7 +376,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 ---
 
-### 4.5 `scenes/scenes.json` 字段字典
+### 4.6 `scenes/scenes.json` 字段字典
 
 存储角色在时间线上经历的微观生活场景描写（40–500 字，按时间序展开）（顶层为数组 `Scene[]`）。
 
@@ -353,7 +401,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 ---
 
-### 4.6 `runs/history_runs.json` 字段字典
+### 4.7 `runs/history_runs.json` 字段字典
 
 存储后台生活任务、日程规划、场景细化与长期记忆交还的全量历史运行流水（顶层为数组 `Run[]`）。
 
@@ -368,18 +416,18 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 ---
 
-### 4.7 `knowledge-graph/graph.json` 字段字典
+### 4.8 `knowledge-graph/graph.json` 字段字典
 
 存储从所有真实文稿与梦境中抽取并经原文逐字锚定核对的实体与三元组事实网络。
 
-#### 4.7.1 根容器对象结构
+#### 4.8.1 根容器对象结构
 
 | JSON 路径 | 原始数据类型 | 必填性 | 枚举 / 格式 / 取值范围 | 业务含义与语义解释 | 记忆底座映射对齐 |
 |---|---|---|---|---|---|
 | `graph.entities[]` | `array<object>` | **REQUIRED** | 实体对象列表 | 图谱中出现的独立命名实体节点。 | Graph Entities / Nodes |
 | `graph.triples[]` | `array<object>` | **REQUIRED** | 三元组对象列表 | 实体间的关系边事实全集。 | Graph Triples / Edges |
 
-#### 4.7.2 实体对象 (`graph.entities[]`) 叶子字典
+#### 4.8.2 实体对象 (`graph.entities[]`) 叶子字典
 
 | JSON 路径 | 原始数据类型 | 必填性 | 枚举 / 格式 / 取值范围 | 业务含义与语义解释 | 记忆底座映射对齐 |
 |---|---|---|---|---|---|
@@ -388,7 +436,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `[].type` | `string` | **REQUIRED** | `"character"` \| `"document"` \| `"concept"` \| `"location"` \| `"item"` \| `"activity"` | 实体类别。 | Node Type |
 | `[].description` | `string` | **OPTIONAL** | 描述字符串 | 实体的补充语义说明。 | Node Description |
 
-#### 4.7.3 三元组对象 (`graph.triples[]`) 叶子字典
+#### 4.8.3 三元组对象 (`graph.triples[]`) 叶子字典
 
 | JSON 路径 | 原始数据类型 | 必填性 | 枚举 / 格式 / 取值范围 | 业务含义与语义解释 | 记忆底座映射对齐 |
 |---|---|---|---|---|---|
@@ -403,7 +451,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 ---
 
-### 4.8 `native-memories/native_memories.json` 字段字典
+### 4.9 `native-memories/native_memories.json` 字段字典
 
 存储小应用通过 SDK 读取并逆向关联的 Layla 宿主原生会话记忆快照（顶层为数组 `NativeMemorySnapshot[]`）。
 
@@ -420,7 +468,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 
 ---
 
-### 4.9 降级单文件 JSON 根容器字段字典 (`life-backup-*.json`)
+### 4.10 降级单文件 JSON 根容器字段字典 (`life-backup-*.json`)
 
 当且仅当发生格式降级时，根对象由以下字段构成：
 
@@ -436,31 +484,35 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `manifest` | `object` | **REQUIRED** | 完整内嵌 4.1 节定义的 Manifest 字典对象 |
 | `profile` | `object` | **REQUIRED** | 完整内嵌 4.2 节定义的 Profile 字典对象 |
 | `schedules` | `array<object>` | **REQUIRED** | 完整内嵌 4.3 节定义的 DailyFact 数组 |
-| `documents` | `array<object>` | **REQUIRED** | 完整内嵌 4.4 节定义的 Document 数组 |
-| `scenes` | `array<object>` | **REQUIRED** | 完整内嵌 4.5 节定义的 Scene 数组 |
-| `runs` | `array<object>` | **REQUIRED** | 完整内嵌 4.6 节定义的 Run 数组 |
-| `knowledgeGraph` | `object` | **REQUIRED** | 完整内嵌 4.7 节定义的 Graph 字典对象 (`{ entities, triples }`) |
-| `nativeMemories` | `array<object>` | **REQUIRED** | 完整内嵌 4.8 节定义的 NativeMemorySnapshot 数组 |
+| `plans` | `array<object>` | **REQUIRED** | 完整内嵌 4.4 节定义的 PlanRecord 数组 |
+| `documents` | `array<object>` | **REQUIRED** | 完整内嵌 4.5 节定义的 Document 数组 |
+| `scenes` | `array<object>` | **REQUIRED** | 完整内嵌 4.6 节定义的 Scene 数组 |
+| `runs` | `array<object>` | **REQUIRED** | 完整内嵌 4.7 节定义的 Run 数组 |
+| `knowledgeGraph` | `object` | **REQUIRED** | 完整内嵌 4.8 节定义的 Graph 字典对象 (`{ entities, triples }`) |
+| `nativeMemories` | `array<object>` | **REQUIRED** | 完整内嵌 4.9 节定义的 NativeMemorySnapshot 数组 |
 
 ---
 
 ## 5. 完整实际文件示例 (Complete Concrete Real-World Examples)
 
-本章给出真实环境下完全合法、可直接通过 `JSON.parse()` 校验的 8 个子文件及单文件降级 JSON 的完整内容（以角色“澪”、日期“2026-11-01”为例，杜绝任何省略号与伪代码占位）。
+本章给出真实环境下完全合法、可直接通过 `JSON.parse()` 校验的 9 个子文件（含独立分表 `schedules/plans.json`）及单文件降级 JSON 的完整内容（以角色“澪”、日期“2026-11-01”为例，杜绝任何省略号与伪代码占位）。
 
 ### 5.1 `manifest.json` 示例
 ```json
 {
-  "exportVersion": "1.0.0",
-  "specVersion": "1.0.0",
+  "exportVersion": "1.1.0",
+  "specVersion": "1.1.0",
   "appVersion": "0.2.3",
+  "version": "0.2.3",
   "exportedAt": 1793613600000,
+  "exportedAtISO": "2026-11-01T14:00:00.000Z",
   "characterId": "life-demo-mio",
   "characterName": "澪",
   "archiveMode": "zip",
   "recordCounts": {
     "profile": 1,
     "schedules": 1,
+    "plans": 1,
     "documents": 1,
     "scenes": 2,
     "runs": 2,
@@ -468,10 +520,22 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
     "knowledgeGraphEntities": 3,
     "nativeMemories": 1
   },
+  "summary": {
+    "documentCount": 1,
+    "sceneCount": 2,
+    "runCount": 2,
+    "tripleCount": 5,
+    "nativeMemoryCount": 1,
+    "planCount": 1
+  },
   "files": [
     {
+      "path": "manifest.json",
+      "description": "导出元数据清单"
+    },
+    {
       "path": "profile.json",
-      "sizeBytes": 2048,
+      "sizeBytes": 2450,
       "sha256": "4a7d1ed414474e4033ac29ccb8653d9b1397b9ee9bb56f4d1e2e4ef65c711202",
       "crc32": "8A2B3C4D",
       "format": "application/json"
@@ -481,6 +545,13 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
       "sizeBytes": 1024,
       "sha256": "8ef01bcda5b625720d20efab2a4d310619a8fbcfecbb0d4374b60e6f98efaa55",
       "crc32": "5F6E7D8C",
+      "format": "application/json"
+    },
+    {
+      "path": "schedules/plans.json",
+      "sizeBytes": 1820,
+      "sha256": "2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c",
+      "crc32": "7D8E9F0A",
       "format": "application/json"
     },
     {
@@ -525,7 +596,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 ### 5.2 `profile.json` 示例
 ```json
 {
-  "schema": 2,
+  "schema": 3,
   "characterId": "life-demo-mio",
   "name": "澪",
   "createdAt": 1793500000000,
@@ -546,6 +617,41 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
     "background": true,
     "autoWrite": true,
     "syncCard": true,
+    "syncPrecision": "halfhour",
+    "dayTypes": [
+      {
+        "id": "restday",
+        "name": "日常休息",
+        "enabled": true,
+        "weight": 50,
+        "days": "any",
+        "guide": "自由度高、节奏悠闲，以阅读、散步、喝茶为主"
+      },
+      {
+        "id": "workday",
+        "name": "专注工作",
+        "enabled": true,
+        "weight": 35,
+        "days": "weekday",
+        "guide": "白天有大块连贯的阅读研究或写作时间，作息规律"
+      },
+      {
+        "id": "outing",
+        "name": "出门游玩",
+        "enabled": true,
+        "weight": 15,
+        "days": "weekend",
+        "guide": "外出较多，包含旧书店、美术馆、咖啡馆或与朋友出行"
+      }
+    ],
+    "extraRules": "",
+    "voiceRules": true,
+    "businessPriority": true,
+    "wokenBriefRule": true,
+    "customVoiceRules": "",
+    "planAheadHour": 22,
+    "tomorrowAfterHour": 18,
+    "autoPlan": false,
     "memorySessionMode": "isolated",
     "diaryHour": 21,
     "dayType": "周末",
@@ -704,7 +810,134 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 ]
 ```
 
-### 5.4 `documents/documents.json` 示例
+### 5.4 `schedules/plans.json` 示例
+```json
+[
+  {
+    "id": "plan-life-demo-mio-2026-11-01",
+    "characterId": "life-demo-mio",
+    "day": "2026-11-01",
+    "title": "初冬的阅读与旧书店散步",
+    "mood": "平静悠闲",
+    "dayType": "restday",
+    "source": "generated",
+    "hint": "午后去神保町旧书店逛逛，晚饭想喝豆腐蛤蜊汤",
+    "generatedAt": 1793500800000,
+    "changes": [
+      {
+        "at": 1793587200000,
+        "start": "14:00",
+        "end": "16:00",
+        "summary": "在神保町旧书店淘到昭和抒情诗集",
+        "detail": "原定散步临时延长，在角落书摊仔细翻阅旧诗集"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "2026-11-01-0",
+        "start": 0,
+        "end": 480,
+        "kind": "sleep",
+        "summary": "夜间睡眠与休息",
+        "location": "枫叶町单人公寓",
+        "scene": "室内窗帘紧闭，暖白色的台灯已熄灭，空气中残留着微弱的洋甘菊香气。",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-480",
+        "start": 480,
+        "end": 525,
+        "kind": "meal",
+        "summary": "起床洗漱与清晨红茶",
+        "location": "公寓小厨房",
+        "scene": "晨光刚透过薄纱窗帘，澪披上米色针织开衫，接水煮沸大吉岭红茶，杯口升腾着轻盈的白汽。",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-525",
+        "start": 525,
+        "end": 720,
+        "kind": "study",
+        "summary": "大学南馆阅读美学理论",
+        "location": "大学图书馆南馆",
+        "scene": "坐在靠窗的长木桌旁，手边放着借阅的三本文艺理论专著，安静翻动书页。",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-720",
+        "start": 720,
+        "end": 780,
+        "kind": "meal",
+        "summary": "午间便餐与玄米茶",
+        "location": "校园轻食餐厅",
+        "scene": "挑选了牛油果鸡肉三明治与热玄米茶，静静看着窗外穿行的学生。",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-780",
+        "start": 780,
+        "end": 840,
+        "kind": "travel",
+        "summary": "乘电车前往神保町",
+        "location": "电车",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-840",
+        "start": 840,
+        "end": 960,
+        "kind": "leisure",
+        "summary": "在神保町旧书店淘到昭和抒情诗集",
+        "location": "神保町旧书街",
+        "scene": "在旧书摊角落淘到一本初版诗集，泛黄的纸页散发着古旧的油墨气息。",
+        "source": "change"
+      },
+      {
+        "id": "2026-11-01-960",
+        "start": 960,
+        "end": 1080,
+        "kind": "leisure",
+        "summary": "露天咖啡座阅读诗集",
+        "location": "街角咖啡馆",
+        "scene": "点了一杯美式咖啡，坐在室外遮阳伞下翻看淘到的旧诗集。",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-1080",
+        "start": 1080,
+        "end": 1140,
+        "kind": "meal",
+        "summary": "烹饪豆腐蛤蜊汤与晚餐",
+        "location": "公寓厨房",
+        "scene": "回到家做了温暖的豆腐蛤蜊味噌汤，搭配白米饭，享受安静的独处时光。",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-1140",
+        "start": 1140,
+        "end": 1410,
+        "kind": "leisure",
+        "summary": "整理手记与反思阅读",
+        "location": "公寓书桌",
+        "scene": "在墨绿色的手账本上写下今天的所见所感，听着轻柔的室内乐。",
+        "source": "generated"
+      },
+      {
+        "id": "2026-11-01-1410",
+        "start": 1410,
+        "end": 1440,
+        "kind": "sleep",
+        "summary": "就寝准备与入睡",
+        "location": "卧室",
+        "scene": "调暗床头灯光，换上棉质睡衣，闭上双眼逐渐进入睡眠。",
+        "source": "generated"
+      }
+    ]
+  }
+]
+```
+
+### 5.5 `documents/documents.json` 示例
 ```json
 [
   {
@@ -761,7 +994,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 ]
 ```
 
-### 5.5 `scenes/scenes.json` 示例
+### 5.6 `scenes/scenes.json` 示例
 ```json
 [
   {
@@ -803,7 +1036,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 ]
 ```
 
-### 5.6 `runs/history_runs.json` 示例
+### 5.7 `runs/history_runs.json` 示例
 ```json
 [
   {
@@ -825,7 +1058,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 ]
 ```
 
-### 5.7 `knowledge-graph/graph.json` 示例
+### 5.8 `knowledge-graph/graph.json` 示例
 ```json
 {
   "entities": [
@@ -903,7 +1136,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 }
 ```
 
-### 5.8 `native-memories/native_memories.json` 示例
+### 5.9 `native-memories/native_memories.json` 示例
 ```json
 [
   {
@@ -919,37 +1152,48 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 ]
 ```
 
-### 5.9 单文件降级 JSON 示例 (`life-backup-life-demo-mio-1793613600000.json`)
+### 5.10 单文件降级 JSON 示例 (`life-backup-life-demo-mio-1793613600000.json`)
 ```json
 {
-  "exportVersion": "1.0.0",
-  "specVersion": "1.0.0",
+  "exportVersion": "1.1.0",
+  "specVersion": "1.1.0",
   "appVersion": "0.2.3",
   "exportedAt": 1793613600000,
   "characterId": "life-demo-mio",
   "characterName": "澪",
   "archiveMode": "json_fallback",
   "manifest": {
-    "exportVersion": "1.0.0",
-    "specVersion": "1.0.0",
+    "exportVersion": "1.1.0",
+    "specVersion": "1.1.0",
     "appVersion": "0.2.3",
+    "version": "0.2.3",
     "exportedAt": 1793613600000,
+    "exportedAtISO": "2026-11-01T14:00:00.000Z",
     "characterId": "life-demo-mio",
     "characterName": "澪",
     "archiveMode": "json_fallback",
     "recordCounts": {
       "profile": 1,
       "schedules": 1,
+      "plans": 1,
       "documents": 1,
       "scenes": 2,
       "runs": 2,
       "knowledgeGraphTriples": 5,
       "knowledgeGraphEntities": 3,
       "nativeMemories": 1
+    },
+    "summary": {
+      "documentCount": 1,
+      "sceneCount": 2,
+      "runCount": 2,
+      "tripleCount": 5,
+      "nativeMemoryCount": 1,
+      "planCount": 1
     }
   },
   "profile": {
-    "schema": 2,
+    "schema": 3,
     "characterId": "life-demo-mio",
     "name": "澪",
     "createdAt": 1793500000000,
@@ -970,6 +1214,41 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
       "background": true,
       "autoWrite": true,
       "syncCard": true,
+      "syncPrecision": "halfhour",
+      "dayTypes": [
+        {
+          "id": "restday",
+          "name": "日常休息",
+          "enabled": true,
+          "weight": 50,
+          "days": "any",
+          "guide": "自由度高、节奏悠闲，以阅读、散步、喝茶为主"
+        },
+        {
+          "id": "workday",
+          "name": "专注工作",
+          "enabled": true,
+          "weight": 35,
+          "days": "weekday",
+          "guide": "白天有大块连贯的阅读研究或写作时间，作息规律"
+        },
+        {
+          "id": "outing",
+          "name": "出门游玩",
+          "enabled": true,
+          "weight": 15,
+          "days": "weekend",
+          "guide": "外出较多，包含旧书店、美术馆、咖啡馆或与朋友出行"
+        }
+      ],
+      "extraRules": "",
+      "voiceRules": true,
+      "businessPriority": true,
+      "wokenBriefRule": true,
+      "customVoiceRules": "",
+      "planAheadHour": 22,
+      "tomorrowAfterHour": 18,
+      "autoPlan": false,
       "memorySessionMode": "isolated",
       "diaryHour": 21,
       "dayType": "周末",
@@ -1120,6 +1399,129 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
       "todayDiarySummary": "今日在初冬的晨光中醒来，为自己煮了一杯温热的大吉岭红茶。上午前往大学南馆阅读文艺理论专著，午后在旧书店找到心仪的诗集。一整天步调从容而充实。",
       "todayDreamTitle": "",
       "todayDreamSummary": ""
+    }
+  ],
+  "plans": [
+    {
+      "id": "plan-life-demo-mio-2026-11-01",
+      "characterId": "life-demo-mio",
+      "day": "2026-11-01",
+      "title": "初冬的阅读与旧书店散步",
+      "mood": "平静悠闲",
+      "dayType": "restday",
+      "source": "generated",
+      "hint": "午后去神保町旧书店逛逛，晚饭想喝豆腐蛤蜊汤",
+      "generatedAt": 1793500800000,
+      "changes": [
+        {
+          "at": 1793587200000,
+          "start": "14:00",
+          "end": "16:00",
+          "summary": "在神保町旧书店淘到昭和抒情诗集",
+          "detail": "原定散步临时延长，在角落书摊仔细翻阅旧诗集"
+        }
+      ],
+      "nodes": [
+        {
+          "id": "2026-11-01-0",
+          "start": 0,
+          "end": 480,
+          "kind": "sleep",
+          "summary": "夜间睡眠与休息",
+          "location": "枫叶町单人公寓",
+          "scene": "室内窗帘紧闭，暖白色的台灯已熄灭，空气中残留着微弱的洋甘菊香气。",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-480",
+          "start": 480,
+          "end": 525,
+          "kind": "meal",
+          "summary": "起床洗漱与清晨红茶",
+          "location": "公寓小厨房",
+          "scene": "晨光刚透过薄纱窗帘，澪披上米色针织开衫，接水煮沸大吉岭红茶，杯口升腾着轻盈的白汽。",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-525",
+          "start": 525,
+          "end": 720,
+          "kind": "study",
+          "summary": "大学南馆阅读美学理论",
+          "location": "大学图书馆南馆",
+          "scene": "坐在靠窗的长木桌旁，手边放着借阅的三本文艺理论专著，安静翻动书页。",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-720",
+          "start": 720,
+          "end": 780,
+          "kind": "meal",
+          "summary": "午间便餐与玄米茶",
+          "location": "校园轻食餐厅",
+          "scene": "挑选了牛油果鸡肉三明治与热玄米茶，静静看着窗外穿行的学生。",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-780",
+          "start": 780,
+          "end": 840,
+          "kind": "travel",
+          "summary": "乘电车前往神保町",
+          "location": "电车",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-840",
+          "start": 840,
+          "end": 960,
+          "kind": "leisure",
+          "summary": "在神保町旧书店淘到昭和抒情诗集",
+          "location": "神保町旧书街",
+          "scene": "在旧书摊角落淘到一本初版诗集，泛黄的纸页散发着古旧的油墨气息。",
+          "source": "change"
+        },
+        {
+          "id": "2026-11-01-960",
+          "start": 960,
+          "end": 1080,
+          "kind": "leisure",
+          "summary": "露天咖啡座阅读诗集",
+          "location": "街角咖啡馆",
+          "scene": "点了一杯美式咖啡，坐在室外遮阳伞下翻看淘到的旧诗集。",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-1080",
+          "start": 1080,
+          "end": 1140,
+          "kind": "meal",
+          "summary": "烹饪豆腐蛤蜊汤与晚餐",
+          "location": "公寓厨房",
+          "scene": "回到家做了温暖的豆腐蛤蜊味噌汤，搭配白米饭，享受安静的独处时光。",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-1140",
+          "start": 1140,
+          "end": 1410,
+          "kind": "leisure",
+          "summary": "整理手记与反思阅读",
+          "location": "公寓书桌",
+          "scene": "在墨绿色的手账本上写下今天的所见所感，听着轻柔的室内乐。",
+          "source": "generated"
+        },
+        {
+          "id": "2026-11-01-1410",
+          "start": 1410,
+          "end": 1440,
+          "kind": "sleep",
+          "summary": "就寝准备与入睡",
+          "location": "卧室",
+          "scene": "调暗床头灯光，换上棉质睡衣，闭上双眼逐渐进入睡眠。",
+          "source": "generated"
+        }
+      ]
     }
   ],
   "documents": [
@@ -1368,22 +1770,22 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 2. **容忍未知新增属性 (Open-World Assumption)**:
    任何合规的反序列化程序或转换 Agent，在遇到未在本规范中定义的额外字段时，**必须安全忽略，严禁抛出异常崩溃**。
 3. **历史版本数据升级支持**:
-   - 本规范对 v0.1.x 与 v0.2.0–v0.2.2 遗留的 SQLite 存储记录提供了自动结构补齐定义（如 Profile 从 `schema: 1` 升级至 `schema: 2` 时自动补充 `cardSync` 与 `healthNote` 默认字段）。
+   - 本规范对 v0.1.x 与 v0.2.0–v0.2.2 遗留的 SQLite 存储记录提供了自动结构补齐定义（如 Profile 从 `schema: 1` 升级至 `schema: 2` 时自动补充 `cardSync` 与 `healthNote` 默认字段，从 `schema: 2` 升级至 `schema: 3` 时自动将历史 `profile.plans` 迁移至 `ll_plans` 独立表并补全扩展设置项）。
 
 ---
 
 ## 7. QA 独立审查与验证验收清单 (QA Verification Checklist)
 
-为了保证本规范文档已完全满足原初用户需求 R2 并可供 QA 角色进行独立验证，在此制定核查清单：
+为了保证本规范文档已完全满足原初用户需求并可供 QA 角色进行独立验证，在此制定核查清单：
 
 - [x] **Criterion 1: 脱离源码自解释性 (Self-Contained Criterion)**:
   不依赖本项目仓库内任何 `.js` 代码，第三方开发者仅通过阅读第 2、4、5 节，即可获知所有字段的名称、含义、类型与底座映射关系，顺利写出转换转换脚本。
 - [x] **Criterion 2: 原子不可分性 (Atomicity Criterion)**:
-  第 4 节对 `manifest.json`、`profile.json`、`schedules/daily_facts.json`、`documents/documents.json`、`scenes/scenes.json`、`runs/history_runs.json`、`knowledge-graph/graph.json`、`native-memories/native_memories.json` 以及降级根 JSON 进行了彻底的叶子字段解构，不存在任何未展开的复合黑盒对象。
+  第 4 节对 `manifest.json`、`profile.json`、`schedules/daily_facts.json`、`schedules/plans.json`、`documents/documents.json`、`scenes/scenes.json`、`runs/history_runs.json`、`knowledge-graph/graph.json`、`native-memories/native_memories.json` 以及降级根 JSON 进行了彻底的叶子字段解构，不存在任何未展开的复合黑盒对象。
 - [x] **Criterion 3: 枚举值穷举性 (Enum Exhaustiveness)**:
   对所有状态字段（`kind`, `phase`, `syncStatus`, `graphStatus`, `retrievalStatus`, `archiveMode`, `wakeSource`, `nature` 等）均给出了完备的封闭枚举集合与状态语义。
 - [x] **Criterion 4: 格式自洽性与可解析性 (Schema Soundness & JSON Validity)**:
-  第 5 节提供的 9 个 JSON 示例均采用 100% 真实业务数据，无任何 `...` 省略号或语法错误，可直接通过标准 JSON 解析器校验。
+  第 5 节提供的 10 个 JSON 示例均采用 100% 真实业务数据，无任何 `...` 省略号或语法错误，可直接通过标准 JSON 解析器校验。
 - [x] **Criterion 5: 记忆底座迁移实操性 (Memory Base Portability)**:
   第 2 节系统性给出了 Mem0、Letta、Zep 的范式对比、映射矩阵与通用算法流程，具备高度的可实施性。
 

@@ -166,8 +166,29 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
   // 5. Fetch Native Memories
   const nativeMemories = await fetchAllNativeMemories(client, characterId);
 
-  // 6. Extract Schedule and Timeline Facts
+  // 6. Extract Schedule and Timeline Facts & Plans
   const scheduleFacts = extractScheduleAndTimelineFacts(profile, documents);
+
+  let plans = [];
+  try {
+    plans = store?.plans ? await store.plans(characterId, { limit: 10000 }) : [];
+  } catch (err) {
+    console.warn('Failed to fetch plans from store, falling back to profile.plans:', err);
+  }
+  if (!plans.length && profile?.plans) {
+    plans = Object.entries(profile.plans).map(([day, p]) => ({
+      id: `${characterId}-${day}`,
+      characterId,
+      day,
+      title: p.title || '',
+      mood: p.mood || '',
+      dayType: p.dayType || null,
+      nodes: p.nodes || [],
+      changes: p.changes || [],
+      source: p.source || 'generated',
+      generatedAt: p.generatedAt || now
+    }));
+  }
 
   // Build DailyFact[] array conforming to EXPORT_FORMAT_SPEC.md Section 4.3 & 5.3
   const dailyFactDays = Object.keys(scheduleFacts.dailyFacts);
@@ -225,13 +246,14 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
     scenes: scenes.length,
     runs: runs.length,
     triples: triples.length,
-    nativeMemories: nativeMemories.length
+    nativeMemories: nativeMemories.length,
+    plans: plans.length
   };
 
   const isZipInit = !opts.forceJson;
   const manifest = {
-    exportVersion: '1.0.0',
-    specVersion: '1.0.0',
+    exportVersion: '1.1.0',
+    specVersion: '1.1.0',
     appVersion: '0.2.3',
     version: '0.2.3',
     exportedAt: now,
@@ -245,12 +267,14 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
       sceneCount: scenes.length,
       runCount: runs.length,
       tripleCount: triples.length,
-      nativeMemoryCount: nativeMemories.length
+      nativeMemoryCount: nativeMemories.length,
+      planCount: plans.length
     },
     files: [
       { path: 'manifest.json', description: '导出元数据清单' },
       { path: 'profile.json', description: '角色配置与作息状态' },
       { path: 'schedules/daily_facts.json', description: '日程节点与时间线事实' },
+      { path: 'schedules/plans.json', description: '每日日程全量规划与区间调整记录' },
       { path: 'documents/documents.json', description: '生活文稿（日记、梦境、反思、作品）正文与摘要' },
       { path: 'scenes/scenes.json', description: '已细化的生活片段与场景记录' },
       { path: 'runs/history_runs.json', description: '全量系统与后台运行执行记录' },
@@ -264,6 +288,7 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
     { name: 'manifest.json', data: JSON.stringify(manifest, null, 2) },
     { name: 'profile.json', data: JSON.stringify(profile, null, 2) },
     { name: 'schedules/daily_facts.json', data: JSON.stringify(dailyFactsArray, null, 2) },
+    { name: 'schedules/plans.json', data: JSON.stringify(plans, null, 2) },
     { name: 'documents/documents.json', data: JSON.stringify(documents, null, 2) },
     { name: 'scenes/scenes.json', data: JSON.stringify(scenes, null, 2) },
     { name: 'runs/history_runs.json', data: JSON.stringify(runs, null, 2) },
@@ -276,8 +301,8 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
   let base64 = '';
 
   const buildFallbackJson = () => JSON.stringify({
-    exportVersion: '1.0.0',
-    specVersion: '1.0.0',
+    exportVersion: '1.1.0',
+    specVersion: '1.1.0',
     appVersion: '0.2.3',
     archiveMode: 'json_fallback',
     version: manifest.version,
@@ -287,6 +312,7 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
     manifest: { ...manifest, archiveMode: 'json_fallback' },
     profile,
     schedules: dailyFactsArray,
+    plans,
     documents,
     scenes,
     runs,

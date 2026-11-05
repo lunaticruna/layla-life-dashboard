@@ -105,10 +105,11 @@ export function makeDemoData(now = Date.now()) {
 export function createMockSQL(initial, storage = null) {
   let data = initial;
   data.scenes ||= {};
+  data.plans ||= {};
   const persist = () => storage?.setItem(KEY, JSON.stringify(data));
   function execute(query, args = []) {
     let rows = [], changed = 0;
-    if ([SQL.profiles, SQL.docs, SQL.runs, SQL.locks, SQL.scenes, SQL.scenesByScope, SQL.scenesByCharacter].includes(query)) return { rows, rowsAffected: 0, insertId: 0 };
+    if ([SQL.profiles, SQL.docs, SQL.runs, SQL.locks, SQL.scenes, SQL.scenesByScope, SQL.scenesByCharacter, SQL.plans, SQL.plansByCharacter].includes(query)) return { rows, rowsAffected: 0, insertId: 0 };
     if (query === SQL.getProfile) rows = data.profiles[args[0]] ? [{ data: JSON.stringify(data.profiles[args[0]]) }] : [];
     else if (query === SQL.listProfiles) rows = Object.values(data.profiles).map(p => ({ data: JSON.stringify(p) }));
     else if (query === SQL.putProfile) { data.profiles[args[0]] = JSON.parse(args[1]); changed = 1; }
@@ -121,6 +122,10 @@ export function createMockSQL(initial, storage = null) {
     else if (query === SQL.putScene) { data.scenes[args[0]] = JSON.parse(args[5]); changed = 1; }
     else if (query === SQL.getScene) rows = Object.values(data.scenes).reverse().filter(r => r.key === args[0] && r.generatedAt <= args[1]).sort((a, b) => b.generatedAt - a.generatedAt).slice(0, 1).map(r => ({ data: JSON.stringify(r) }));
     else if (query === SQL.listScenes) rows = Object.values(data.scenes).reverse().filter(r => r.characterId === args[0] && r.generatedAt <= args[1]).sort((a, b) => b.generatedAt - a.generatedAt).slice(0, args[2]).map(r => ({ data: JSON.stringify(r) }));
+    else if (query === SQL.getPlan) rows = data.plans[`${args[0]}-${args[1]}`] ? [data.plans[`${args[0]}-${args[1]}`]] : [];
+    else if (query === SQL.listPlans) rows = Object.values(data.plans).filter(p => p.character_id === args[0]).sort((a, b) => b.day.localeCompare(a.day)).slice(0, args[1]);
+    else if (query === SQL.savePlan) { data.plans[`${args[1]}-${args[2]}`] = { id: args[0], character_id: args[1], day: args[2], title: args[3], mood: args[4], day_type: args[5], nodes: args[6], changes: args[7], data: args[8], generated_at: args[9] }; changed = 1; }
+    else if (query === SQL.deletePlan) { if (data.plans[`${args[0]}-${args[1]}`]) { delete data.plans[`${args[0]}-${args[1]}`]; changed = 1; } }
     else if (query === SQL.acquire) { if (!data.locks[args[0]]) { data.locks[args[0]] = { owner: args[1], expires: args[2] }; changed = 1; } }
     else if (query === SQL.takeover) { if (data.locks[args[2]]?.expires < args[3]) { data.locks[args[2]] = { owner: args[0], expires: args[1] }; changed = 1; } }
     else if (query === SQL.getLock) rows = data.locks[args[0]] ? [{ owner: data.locks[args[0]].owner }] : [];

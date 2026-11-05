@@ -494,7 +494,8 @@ test('export: manifest metadata conforms to specification and exact counts', asy
   // Validate Manifest Fields
   assert.equal(manifest.version, VERSION, 'Manifest version must match core.js VERSION');
   assert.equal(manifest.appVersion, '0.2.3', 'appVersion must be 0.2.3');
-  assert.equal(manifest.specVersion, '1.0.0', 'specVersion must be 1.0.0');
+  assert.equal(manifest.specVersion, '1.1.0', 'specVersion must be 1.1.0');
+  assert.equal(manifest.exportVersion, '1.1.0', 'exportVersion must be 1.1.0');
   assert.equal(manifest.exportedAt, fixedNow, 'exportedAt must match execution timestamp');
   assert.equal(manifest.exportedAtISO, new Date(fixedNow).toISOString(), 'exportedAtISO must be valid ISO string');
   assert.equal(manifest.characterId, characterId, 'characterId must match export character');
@@ -506,7 +507,8 @@ test('export: manifest metadata conforms to specification and exact counts', asy
     scenes: 3,
     runs: 25,
     triples: 0,
-    nativeMemories: 10
+    nativeMemories: 10,
+    plans: 0
   });
 
   // Validate summary counts
@@ -515,14 +517,16 @@ test('export: manifest metadata conforms to specification and exact counts', asy
   assert.equal(manifest.summary.runCount, 25);
   assert.equal(manifest.summary.tripleCount, 0);
   assert.equal(manifest.summary.nativeMemoryCount, 10);
+  assert.equal(manifest.summary.planCount, 0);
 
   // Validate files array
   assert.equal(Array.isArray(manifest.files), true);
-  assert.equal(manifest.files.length, 8, 'Must list all 8 canonical sub-files');
+  assert.equal(manifest.files.length, 9, 'Must list all 9 canonical sub-files');
   const expectedFilePaths = [
     'manifest.json',
     'profile.json',
     'schedules/daily_facts.json',
+    'schedules/plans.json',
     'documents/documents.json',
     'scenes/scenes.json',
     'runs/history_runs.json',
@@ -574,8 +578,8 @@ test('export: ZIP archive validity, standard PKZIP signatures and CRC-32 integri
 
   // Verify EOCD signature (0x06054b50)
   assert.equal(view.getUint32(parsed.eocd.eocdOffset, true), 0x06054b50, 'EOCD signature must match');
-  assert.equal(parsed.entries.length, 8, 'Archive must contain exactly 8 canonical entries');
-  assert.equal(parsed.eocd.totalEntries, 8);
+  assert.equal(parsed.entries.length, 9, 'Archive must contain exactly 9 canonical entries');
+  assert.equal(parsed.eocd.totalEntries, 9);
 
   // Check each entry: Method 0 (STORE), CRC-32 match, Central Directory signature, valid JSON
   for (const entry of parsed.entries) {
@@ -649,6 +653,7 @@ test('export: graceful fallback to single structured JSON on explicit forceJson 
     'manifest',
     'profile',
     'schedules',
+    'plans',
     'documents',
     'scenes',
     'runs',
@@ -742,11 +747,12 @@ test('export: minimal boundary condition with zero records', async t => {
     scenes: 0,
     runs: 0,
     triples: 0,
-    nativeMemories: 0
+    nativeMemories: 0,
+    plans: 0
   });
 
   const parsed = parseZipArchive(result.base64);
-  assert.equal(parsed.entries.length, 8);
+  assert.equal(parsed.entries.length, 9);
 
   const manifest = parsed.files['manifest.json'].json();
   assert.equal(manifest.recordCounts.documents, 0);
@@ -754,7 +760,9 @@ test('export: minimal boundary condition with zero records', async t => {
   assert.equal(manifest.recordCounts.runs, 0);
   assert.equal(manifest.recordCounts.triples, 0);
   assert.equal(manifest.recordCounts.nativeMemories, 0);
+  assert.equal(manifest.recordCounts.plans, 0);
 
+  assert.deepEqual(parsed.files['schedules/plans.json'].json(), []);
   assert.deepEqual(parsed.files['documents/documents.json'].json(), []);
   assert.deepEqual(parsed.files['scenes/scenes.json'].json(), []);
   assert.deepEqual(parsed.files['runs/history_runs.json'].json(), []);
