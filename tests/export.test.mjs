@@ -493,7 +493,7 @@ test('export: manifest metadata conforms to specification and exact counts', asy
 
   // Validate Manifest Fields
   assert.equal(manifest.version, VERSION, 'Manifest version must match core.js VERSION');
-  assert.equal(manifest.appVersion, '0.2.3', 'appVersion must be 0.2.3');
+  assert.equal(manifest.appVersion, '0.3.0', 'appVersion must be 0.3.0');
   assert.equal(manifest.specVersion, '1.1.0', 'specVersion must be 1.1.0');
   assert.equal(manifest.exportVersion, '1.1.0', 'exportVersion must be 1.1.0');
   assert.equal(manifest.exportedAt, fixedNow, 'exportedAt must match execution timestamp');

@@ -1,8 +1,8 @@
-# Layla Life Dashboard v0.2.3 — Atomic Export & Backup Format Specification
-# 生活手记 v0.2.3 全量生活记录导出与备份配套格式规范（原子级字典与记忆底座迁移指引）
+# Layla Life Dashboard v0.3.0 — Atomic Export & Backup Format Specification
+# 生活手记 v0.3.0 全量生活记录导出与备份配套格式规范（原子级字典与记忆底座迁移指引）
 
 - **规范版本 (specVersion)**: `1.1.0`
-- **对应应用版本 (appVersion)**: `0.2.3`
+- **对应应用版本 (appVersion)**: `0.3.0`
 - **导出格式大版本 (exportVersion)**: `1.1.0`
 - **发布日期**: 2026-11-05
 - **状态**: 权威发布 (Normative Specification)
@@ -13,7 +13,7 @@
 ## 1. 背景与目标 (Background & Purpose)
 
 ### 1.1 背景
-Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的全自主拟真生活模拟与长期记忆管理子系统。在系统演进至 `0.2.3` 版本后，角色的生理时钟、作息规划、微观场景描写、反思文稿、角色卡实时状态同步、知识图谱三元组以及与 Layla 宿主 SDK 关联的原生记忆构成了完整、自洽的角色生命历程。
+Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的全自主拟真生活模拟与长期记忆管理子系统。在系统演进至 `0.3.0` 版本后，角色的生理时钟、作息规划、微观场景描写、反思文稿、角色卡实时状态同步、知识图谱三元组以及与 Layla 宿主 SDK 关联的原生记忆构成了完整、自洽的角色生命历程。
 
 为了防止数据孤岛、消除厂商锁定，并支持用户在不同设备、宿主实例以及前沿智能体记忆底座（如 Mem0、Letta、Zep 等）之间无缝迁移角色全量记忆，本系统在“生活设置 → 导出生活记录”中引入了全新的全量归档备份机制。
 
@@ -158,7 +158,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
   {
     "exportVersion": "1.1.0",
     "specVersion": "1.1.0",
-    "appVersion": "0.2.3",
+    "appVersion": "0.3.0",
     "exportedAt": 1793613600000,
     "characterId": "life-demo-mio",
     "characterName": "澪",
@@ -192,7 +192,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 |---|---|---|---|---|---|
 | `manifest.exportVersion` | `string` | **REQUIRED** | SemVer (如 `"1.1.0"`) | 导出文件格式的大版本号，用于升级兼容判定。 | `metadata.export_version` |
 | `manifest.specVersion` | `string` | **REQUIRED** | SemVer (如 `"1.1.0"`) | 本规范文档的遵循版本。 | `metadata.spec_version` |
-| `manifest.appVersion` | `string` | **REQUIRED** | SemVer (如 `"0.2.3"`) | 生成本备份文件的 Layla Life Dashboard 应用版本。 | `metadata.app_version` |
+| `manifest.appVersion` | `string` | **REQUIRED** | SemVer (如 `"0.3.0"`) | 生成本备份文件的 Layla Life Dashboard 应用版本。 | `metadata.app_version` |
 | `manifest.exportedAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 ($>0$) | 备份生成的绝对时刻。 | Timestamp / `created_at` |
 | `manifest.characterId` | `string` | **REQUIRED** | 1–128 字符，URI 安全 | 当前导出数据的所属角色唯一 ID。 | Mem0: `agent_id`<br>Letta: Agent ID<br>Zep: `user_id` |
 | `manifest.characterName` | `string` | **REQUIRED** | 1–64 字符非空字符串 | 角色在导出时的显示名称。 | Agent Display Name |
@@ -372,7 +372,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `[].sourceSceneIds[]` | `array<string>` | **REQUIRED** | 场景 ID 数组 | 整理此文稿时参考的前序生活场景 ID 列表。 | Provenance References |
 | `[].sourceMessageIds[]` | `array<string>` | **REQUIRED** | 宿主消息 ID 数组 | 整理此文稿时参考的宿主聊天消息 ID 列表。 | Provenance References |
 | `[].timelineFacts` | `object` \| `null`| **OPTIONAL** | 符合 DailyFact 结构的子对象 | 嵌入整理文稿时提取的当日时间线事实快照。 | Embedded Facts |
-| `[].version` | `string` | **REQUIRED** | SemVer (如 `"0.2.3"`) | 生成文稿时的系统版本号。 | Provenance Version |
+| `[].version` | `string` | **REQUIRED** | SemVer (如 `"0.3.0"`) | 生成文稿时的系统版本号。 | Provenance Version |
 
 ---
 
@@ -397,7 +397,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `[].source` | `string` | **REQUIRED** | `"generated"` \| `"manual"` | 场景来源（模型自动细化生成或人工编写锁定）。 | Provenance |
 | `[].generatedAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 | 场景实际生成或记录的时刻。 | Created At |
 | `[].experiencedUntil` | `integer` | **REQUIRED** | Unix 毫秒时间戳 | 场景被后序场景切换或当前时刻截断的实际经历截止时间。 | Valid Until / `invalid_at` |
-| `[].version` | `string` | **REQUIRED** | SemVer (如 `"0.2.3"`) | 生成该场景的系统版本号。 | Provenance Version |
+| `[].version` | `string` | **REQUIRED** | SemVer (如 `"0.3.0"`) | 生成该场景的系统版本号。 | Provenance Version |
 
 ---
 
@@ -502,8 +502,8 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 {
   "exportVersion": "1.1.0",
   "specVersion": "1.1.0",
-  "appVersion": "0.2.3",
-  "version": "0.2.3",
+  "appVersion": "0.3.0",
+  "version": "0.3.0",
   "exportedAt": 1793613600000,
   "exportedAtISO": "2026-11-01T14:00:00.000Z",
   "characterId": "life-demo-mio",
@@ -989,7 +989,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
       "todayDreamTitle": "",
       "todayDreamSummary": ""
     },
-    "version": "0.2.3"
+    "version": "0.3.0"
   }
 ]
 ```
@@ -1013,7 +1013,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
     "source": "generated",
     "generatedAt": 1793597700000,
     "experiencedUntil": 1793599500000,
-    "version": "0.2.3"
+    "version": "0.3.0"
   },
   {
     "id": "scene-mio-20261101-1030",
@@ -1031,7 +1031,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
     "source": "generated",
     "generatedAt": 1793605800000,
     "experiencedUntil": 1793611200000,
-    "version": "0.2.3"
+    "version": "0.3.0"
   }
 ]
 ```
@@ -1157,7 +1157,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 {
   "exportVersion": "1.1.0",
   "specVersion": "1.1.0",
-  "appVersion": "0.2.3",
+  "appVersion": "0.3.0",
   "exportedAt": 1793613600000,
   "characterId": "life-demo-mio",
   "characterName": "澪",
@@ -1165,8 +1165,8 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
   "manifest": {
     "exportVersion": "1.1.0",
     "specVersion": "1.1.0",
-    "appVersion": "0.2.3",
-    "version": "0.2.3",
+    "appVersion": "0.3.0",
+    "version": "0.3.0",
     "exportedAt": 1793613600000,
     "exportedAtISO": "2026-11-01T14:00:00.000Z",
     "characterId": "life-demo-mio",
@@ -1574,7 +1574,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
         "todayDreamTitle": "",
         "todayDreamSummary": ""
       },
-      "version": "0.2.3"
+      "version": "0.3.0"
     }
   ],
   "scenes": [
@@ -1594,7 +1594,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
       "source": "generated",
       "generatedAt": 1793597700000,
       "experiencedUntil": 1793599500000,
-      "version": "0.2.3"
+      "version": "0.3.0"
     },
     {
       "id": "scene-mio-20261101-1030",
@@ -1612,7 +1612,7 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
       "source": "generated",
       "generatedAt": 1793605800000,
       "experiencedUntil": 1793611200000,
-      "version": "0.2.3"
+      "version": "0.3.0"
     }
   ],
   "runs": [

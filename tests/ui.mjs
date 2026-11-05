@@ -145,7 +145,7 @@ if (fileBuffer.subarray(0, 2).toString() === 'PK') {
 }
 assert.equal(profile.characterId, 'life-demo-mio');
 assert.ok(documents.length >= 3);
-assert.equal(version, '0.2.3');
+assert.equal(version, '0.3.0');
 assert.ok(scenes.length >= 3);
 assert.ok(documents.find(d => d.kind === 'work').sourceSceneIds.length >= 1);
 record('Life-record backup export contains the selected role and archived content');

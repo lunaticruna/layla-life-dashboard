@@ -1,6 +1,6 @@
 import { createZip, uint8ArrayToBase64, stringToBase64 } from './zip.js';
 import { readTriples } from './memory-graph.js';
-import { extractWakeMention } from './core.js';
+import { VERSION, extractWakeMention } from './core.js';
 
 /**
  * Safely extracts knowledge graph triples from a string or object.
@@ -254,8 +254,8 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
   const manifest = {
     exportVersion: '1.1.0',
     specVersion: '1.1.0',
-    appVersion: '0.2.3',
-    version: '0.2.3',
+    appVersion: VERSION,
+    version: VERSION,
     exportedAt: now,
     exportedAtISO: new Date(now).toISOString(),
     characterId,
@@ -303,7 +303,7 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
   const buildFallbackJson = () => JSON.stringify({
     exportVersion: '1.1.0',
     specVersion: '1.1.0',
-    appVersion: '0.2.3',
+    appVersion: VERSION,
     archiveMode: 'json_fallback',
     version: manifest.version,
     exportedAt: manifest.exportedAt,
