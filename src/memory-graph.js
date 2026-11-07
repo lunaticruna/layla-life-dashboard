@@ -15,6 +15,7 @@ export function graphContext(d, native, name) {
   if (String(native.rawText || '').length > 20000 || String(native.summary || '').length > 3000) throw new Error('原生记录过长，请先检查原文，未截断或覆盖记忆');
   const wakeTime = ['diary', 'reflection'].includes(d.kind) && d.timelineFacts?.wakeSource === 'manual' ? d.timelineFacts.wakeTime : '';
   return { characterName: name, recordNode: graphScope(d), date: d.day, kind: DOC_KINDS[d.kind], confirmedWakeTime: wakeTime || null,
+    firstAwakeTime: d.timelineFacts?.firstAwakeTime || null,
     allowedRelationships: DETAIL_KEYS.map(k => graphPrefix(d) + k),
     rawText: native.rawText, summary: native.summary || '' };
 }
@@ -78,7 +79,7 @@ export function buildGraph(text, context, d, opts = {}) {
     const grounded = groundObject(t.object, context.rawText, context.summary);
     if (!grounded) throw new Error('图谱包含无法在原文核对的内容，未写入原生记忆');
     if (grounded === d.title || grounded.startsWith('【Layla生活记录:')) throw new Error('图谱只有标题或技术标记，请提取正文细节');
-    if (!isFictional && hasUnconfirmedWakeTime(grounded, context.confirmedWakeTime)) {
+    if (!isFictional && hasUnconfirmedWakeTime(grounded, context.confirmedWakeTime, { firstAwakeTime: context.firstAwakeTime })) {
       if (opts?.strict) throw new Error('图谱包含未确认或冲突的起床时间，未写入原生记忆');
       continue;
     }
@@ -87,14 +88,25 @@ export function buildGraph(text, context, d, opts = {}) {
   const direct = [];
   if (!isFictional) {
     const wake = [...extractWakeMentions(context.summary), ...extractWakeMentions(context.rawText)]
-      .find(mention => mention.time === context.confirmedWakeTime);
+      .find(mention => mention.exact !== false && mention.time === context.confirmedWakeTime);
     if (wake && !details.some(t => t.object.includes(wake.phrase))) {
       details.unshift({ subject: context.recordNode, relationship: '记录中作息', object: wake.phrase });
     }
     const projectable = ['记录中作息', '记录中时间', '记录中动作', '记录中地点', '记录中感受', '记录中细节'];
     for (const t of details) {
-      if (projectable.includes(t.relationship) && direct.length < 8 && !hasUnconfirmedWakeTime(t.object, context.confirmedWakeTime)) {
-        direct.push({ subject: context.characterName, relationship: `${d.day}${t.relationship.slice(3)}`, object: t.object });
+      if (projectable.includes(t.relationship) && direct.length < 8) {
+        const wakeMentions = extractWakeMentions(t.object);
+        if (wakeMentions.length > 0) {
+          const hasFuzzy = wakeMentions.some(m => m.exact === false);
+          const allMatchConfirmed = Boolean(context.confirmedWakeTime) &&
+            wakeMentions.every(m => m.exact !== false && m.time === context.confirmedWakeTime);
+          if (hasFuzzy || !allMatchConfirmed) {
+            continue; // Prohibit projection to 1-hop direct!
+          }
+        }
+        if (!hasUnconfirmedWakeTime(t.object, context.confirmedWakeTime, { firstAwakeTime: context.firstAwakeTime })) {
+          direct.push({ subject: context.characterName, relationship: `${d.day}${t.relationship.slice(3)}`, object: t.object });
+        }
       }
     }
   }

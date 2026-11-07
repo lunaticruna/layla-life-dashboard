@@ -270,7 +270,7 @@ export function applyCardSyncBlock(existingText = '', block = '') {
   if (!cleanBlock) return base;
   return base ? `${base}\n\n${cleanBlock}` : cleanBlock;
 }
-const wakeMentionPattern = /(?:(?:凌晨|早上|清晨|上午|早晨)\s*)?(?<![早晚迟慢快差好多少再有][了的]?\s*)(\d{1,2}\s*[:：]\s*\d{2}|(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})\s*点(?:\s*(?:半|[零〇0]?\d{1,2}\s*分?|[零〇一二两三四五六七八九十]{1,3}\s*分?))?)\s*(?:(?:多|才|左右|前后|刚)\s*)*(?:起床|醒来|起身|睡醒|睁开?眼|(?:从(?:被窝|被子|床)(?:里|上)?\s*)?爬(?:起来|出来|下床))/g;
+const wakeMentionPattern = /(?:(?:大概|大约|约(?!\s*[好定见]))\s*)?(?:(?:凌晨|早上|清晨|上午|早晨)\s*)?(?:(?:大概|大约|约(?!\s*[好定见]))\s*)?(?<![早晚迟慢快差好多少再有][了的]?\s*)(\d{1,2}\s*[:：]\s*\d{2}|(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})\s*点(?:\s*(?:半|[零〇0]?\d{1,2}\s*分?|[零〇一二两三四五六七八九十]{1,3}\s*分?))?)\s*(?:(?:多|才|左右|前后|刚)\s*)*(?:起床|睡?醒(?:来|了)?|起身|睁开?眼|(?:从(?:被窝|被子|床)(?:里|上)?\s*)?爬(?:起来|出来|下床))/g;
 
 function chineseClockNumber(value) {
   if (value == null || value === '') return NaN;
@@ -311,7 +311,7 @@ export function extractWakeMentions(text = '') {
     }
 
     // 3. Exclude plan comparisons and chat quotes: e.g. "平时计划8:00起床，今天8:44醒来", "你说早上8点起床"
-    if (/(?:计划|打算|原本|原定|平时|平常|习惯|一般)(?:[在为是约于]|大约)?\s*$/.test(clause.trim())) {
+    if (/(?:计划|打算|原本|原定|平时|平常|习惯|一般)(?:[在为是约于]|大约|大概)?\s*$/.test(clause.trim())) {
       continue;
     }
     if (/(?:你说|听你说|你提到|聊天中?提到|你说过)\s*$/.test(clause.trim())) {
@@ -323,12 +323,31 @@ export function extractWakeMentions(text = '') {
     const h = chineseClockNumber(hours);
     const m = minutes === '半' ? 30 : chineseClockNumber(minutes || '0');
     if (h >= 0 && h < 24 && m >= 0 && m < 60) {
-      const isVague = /(?:点多|左右|前后|大概|大约|约\s*\d)/.test(match[0]);
+      const phrase = match[0].trim();
+      const isMore = /(?:点|半|分|\d|[一二两三四五六七八九十])\s*多/.test(phrase);
+      const isRelativeVague = /(?:左右|前后|大概|大约|约(?!\s*[好定见]))/.test(phrase);
+      const isVague = isMore || isRelativeVague;
+      const center = h * 60 + m;
+
       const mention = {
-        phrase: match[0].trim(),
+        phrase,
         time: `${pad(h)}:${pad(m)}`
       };
-      if (isVague) mention.exact = false;
+
+      if (isVague) {
+        mention.exact = false;
+        if (isMore && (m > 0 || /(?:半|分|\d{2}|[一二两三四五六七八九十]{1,3})\s*多/.test(phrase))) {
+          mention.minMinute = center;
+          mention.maxMinute = Math.min(1439, center + 29);
+        } else if (isMore) {
+          mention.minMinute = h * 60;
+          mention.maxMinute = Math.min(1439, h * 60 + 59);
+        } else {
+          mention.minMinute = Math.max(0, center - 20);
+          mention.maxMinute = Math.min(1439, center + 20);
+        }
+      }
+
       mentions.push(mention);
     }
   }
@@ -346,10 +365,54 @@ export function confirmedWakeTime(profile, day, now = Date.now()) {
   return local.day === day ? hhmm(local.minute) : '';
 }
 
-export function hasUnconfirmedWakeTime(text, confirmedTime) {
-  return extractWakeMentions(text)
-    .filter(mention => mention.exact !== false)
-    .some(mention => mention.time !== confirmedTime);
+export function wakeMinuteInterval(mention) {
+  if (mention.minMinute != null && mention.maxMinute != null) {
+    return [mention.minMinute, mention.maxMinute];
+  }
+  const [h, m] = mention.time.split(':').map(Number);
+  const min = h * 60 + m;
+  return [min, min];
+}
+
+export function hasUnconfirmedWakeTime(text, confirmedTime, opts = {}) {
+  const mentions = extractWakeMentions(text);
+  if (!mentions.length) return false;
+
+  if (confirmedTime) {
+    const [ch, cm] = confirmedTime.split(':').map(Number);
+    const confirmedMinute = ch * 60 + cm;
+    for (const mention of mentions) {
+      if (mention.exact === false) {
+        const [minMinute, maxMinute] = wakeMinuteInterval(mention);
+        if (confirmedMinute < minMinute || confirmedMinute > maxMinute) {
+          return true; // Conflicting fuzzy wake time
+        }
+      } else {
+        if (mention.time !== confirmedTime) {
+          return true; // Conflicting exact wake time
+        }
+      }
+    }
+    return false;
+  }
+
+  // When confirmedTime is unconfirmed / empty:
+  const hasExact = mentions.some(m => m.exact !== false);
+  if (hasExact) return true;
+
+  const firstAwake = opts?.firstAwakeTime || opts?.timelineFacts?.firstAwakeTime;
+  if (firstAwake) {
+    const [ah, am] = firstAwake.split(':').map(Number);
+    const firstAwakeMinute = ah * 60 + am;
+    for (const mention of mentions) {
+      const [minMinute] = wakeMinuteInterval(mention);
+      if (minMinute > firstAwakeMinute) {
+        return true; // Contradicts earlier awake scene
+      }
+    }
+  }
+
+  return false;
 }
 export function dailyTimelineFacts(profile, scenes = [], day = null, now = Date.now(), docs = []) {
   const tz = profile.settings.timezone;
@@ -442,16 +505,36 @@ export function buildCardSyncBlock(profile, scenes = [], docs = [], now = Date.n
 export function memoryPayload(document, opts = {}) {
   const mode = opts.memorySessionMode || document.memorySessionMode;
   const sessionId = opts.sessionId || (mode === 'isolated' ? archiveSessionId(document.characterId) : mode === 'active' ? (document.sessionId || archiveSessionId(document.characterId)) : (document.sessionId || archiveSessionId(document.characterId)));
-  const provenance = document.kind === 'dream' ? '这是梦境，不是双方真实经历。' : document.kind === 'work' ? '这是创作作品，不是现实事件。' : '角色当日第一人称生活与作息记录；涉及与用户的互动以实际聊天为准。';
+  let provenance = document.kind === 'dream'
+    ? '这是梦境，不是双方真实经历。'
+    : document.kind === 'work'
+    ? '这是创作作品，不是现实事件。'
+    : '角色当日第一人称生活与作息记录；涉及与用户的互动以实际聊天为准。';
   const wakeTime = ['diary', 'reflection'].includes(document.kind) && document.timelineFacts?.wakeSource === 'manual' ? document.timelineFacts.wakeTime : '';
+  const scanText = [document.title, document.body, document.summary].filter(Boolean).join('\n');
+  const allWakeMentions = ['diary', 'reflection'].includes(document.kind) ? extractWakeMentions(scanText) : [];
+  const hasFuzzyWake = allWakeMentions.some(m => m.exact === false);
+
   if (opts.strict && ['diary', 'reflection'].includes(document.kind)) {
-    const scanText = [document.title, document.body, document.summary].filter(Boolean).join('\n');
-    if (hasUnconfirmedWakeTime(scanText, wakeTime)) {
+    if (hasUnconfirmedWakeTime(scanText, wakeTime, { firstAwakeTime: document.timelineFacts?.firstAwakeTime })) {
       throw new Error('文稿包含未确认或冲突的起床时间，已严格拦截原生记忆生成；请重新生成文稿');
     }
   }
+
+  let wakeTag = '';
   const summaryText = String(document.summary || '');
-  const hasWakeInSummary = extractWakeMentions(summaryText).some(mention => mention.time === wakeTime);
-  const wakeTag = wakeTime && !hasWakeInSummary ? `（已确认 ${wakeTime} 起床）` : '';
+  if (['diary', 'reflection'].includes(document.kind)) {
+    if (wakeTime) {
+      const isConflicting = hasUnconfirmedWakeTime(summaryText, wakeTime, { firstAwakeTime: document.timelineFacts?.firstAwakeTime });
+      const hasExactWakeInSummary = extractWakeMentions(summaryText).some(m => m.exact !== false && m.time === wakeTime);
+      if (!isConflicting && !hasExactWakeInSummary) {
+        wakeTag = `（已确认 ${wakeTime} 起床）`;
+      }
+    } else if (hasFuzzyWake) {
+      wakeTag = '（起床时间未确认）';
+      provenance += '实际起床时间未确认，文中时间表述仅为模糊回顾。';
+    }
+  }
+
   return { id: opts.id ?? 0, character_id: document.characterId, session_id: sessionId, rawText: `${marker(document.id)}\n类型：${DOC_KINDS[document.kind]}；日期：${document.day}。${provenance}\n标题：${document.title}\n${document.body}`, timestamp: opts.timestamp ?? document.createdAt, summary: `${DOC_KINDS[document.kind]}（${document.day}）《${document.title}》${wakeTag}：${document.summary}`, knowledgeGraphJSON: opts.knowledgeGraphJSON ?? null };
 }

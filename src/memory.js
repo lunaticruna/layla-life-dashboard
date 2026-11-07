@@ -14,7 +14,7 @@ export function syncDocumentWakeFacts(d, profile, now = Date.now()) {
 export function assertNoUnconfirmedWake(d, wakeTime) {
   if (['diary', 'reflection'].includes(d.kind)) {
     const scanText = [d.title, d.body, d.summary].filter(Boolean).join('\n');
-    if (hasUnconfirmedWakeTime(scanText, wakeTime)) {
+    if (hasUnconfirmedWakeTime(scanText, wakeTime, { firstAwakeTime: d.timelineFacts?.firstAwakeTime })) {
       throw new Error('文稿包含未确认或冲突的起床时间，已严格拦截写入原生记忆；请核对起床时间后重新生成文稿');
     }
   }
@@ -136,22 +136,30 @@ export async function writeMemory(client, store, id, opts = {}) {
   return store.lock(initial.characterId, async () => {
     const d = await store.getDoc(id); stopped(opts.signal);
     if (d.syncStatus === 'written') return opts.reconcileOnly ? d : enrichLocked(client, store, d, opts);
-    const profile = await store.getProfile(d.characterId);
-    const sessionMode = opts.memorySessionMode || profile?.settings?.memorySessionMode || 'isolated';
-    const characterName = profile?.name || d.characterId;
-    const confirmedWake = syncDocumentWakeFacts(d, profile);
-    assertNoUnconfirmedWake(d, confirmedWake);
-    await store.putDoc(d);
-    if (sessionMode === 'active' && !d.sessionId) {
-      if (!profile?.selectedSessionId) throw new Error('这个角色还没有原生会话。先进行一次原生聊天，再更新生活状态并重试');
-      d.sessionId = profile.selectedSessionId; await store.putDoc(d);
-    } else if (!d.sessionId && profile?.selectedSessionId) {
-      d.sessionId = profile.selectedSessionId; await store.putDoc(d);
+
+    if (!opts.reconcileOnly) {
+      const profile = await store.getProfile(d.characterId);
+      const confirmedWake = syncDocumentWakeFacts(d, profile);
+      assertNoUnconfirmedWake(d, confirmedWake);
+      await store.putDoc(d);
     }
+
     if (d.syncStatus === 'stale' && validId(d.memoryId)) {
       const existing = await findWrittenMemory(client, d, opts);
       if (!existing) throw new Error('找不到原记忆；可能已删除或日期改变，未创建替代条目');
       if (opts.reconcileOnly) return d;
+      const profile = await store.getProfile(d.characterId);
+      const sessionMode = opts.memorySessionMode || profile?.settings?.memorySessionMode || 'isolated';
+      const characterName = profile?.name || d.characterId;
+      if (sessionMode === 'active' && !d.sessionId) {
+        if (!profile?.selectedSessionId) throw new Error('这个角色还没有原生会话。先进行一次原生聊天，再更新生活状态并重试');
+        d.sessionId = profile.selectedSessionId; await store.putDoc(d);
+      } else if (!d.sessionId && profile?.selectedSessionId) {
+        d.sessionId = profile.selectedSessionId; await store.putDoc(d);
+      }
+      const confirmedWake = syncDocumentWakeFacts(d, profile);
+      assertNoUnconfirmedWake(d, confirmedWake);
+      await store.putDoc(d);
       const payload = memoryPayload(d, { id: existing.id, timestamp: existing.timestamp, sessionId: existing.session_id });
       const { graphJSON, graphError } = await prepareGraphDraft(client, store, d, payload, characterName, opts);
       stopped(opts.signal); invalidateCheck(d);
@@ -179,10 +187,23 @@ export async function writeMemory(client, store, id, opts = {}) {
       await store.putDoc(d);
       return enrichLocked(client, store, d, opts);
     }
+
     let native = await findWrittenMemory(client, d, opts);
     let preGraphJSON = null, preGraphError = '';
     if (!native) {
       if (opts.reconcileOnly || validId(d.memoryId) || ['sending', 'uncertain'].includes(d.syncStatus)) throw new Error('暂未找到写入回执，已保留待核对状态；请检查原生记忆，避免重复新增');
+      const profile = await store.getProfile(d.characterId);
+      const sessionMode = opts.memorySessionMode || profile?.settings?.memorySessionMode || 'isolated';
+      const characterName = profile?.name || d.characterId;
+      if (sessionMode === 'active' && !d.sessionId) {
+        if (!profile?.selectedSessionId) throw new Error('这个角色还没有原生会话。先进行一次原生聊天，再更新生活状态并重试');
+        d.sessionId = profile.selectedSessionId; await store.putDoc(d);
+      } else if (!d.sessionId && profile?.selectedSessionId) {
+        d.sessionId = profile.selectedSessionId; await store.putDoc(d);
+      }
+      const confirmedWake = syncDocumentWakeFacts(d, profile);
+      assertNoUnconfirmedWake(d, confirmedWake);
+      await store.putDoc(d);
       const basePayload = memoryPayload(d, { memorySessionMode: sessionMode });
       ({ graphJSON: preGraphJSON, graphError: preGraphError } = await prepareGraphDraft(client, store, d, basePayload, characterName, opts));
       stopped(opts.signal); d.syncStatus = 'sending'; await store.putDoc(d);

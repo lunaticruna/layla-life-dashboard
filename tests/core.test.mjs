@@ -126,7 +126,7 @@ test('R1.1 / R2: Wake regex boundary filtering (degree adverbs, nap contexts, qu
 
   // hasUnconfirmedWakeTime behavior
   assert.equal(hasUnconfirmedWakeTime('十点多才从被子里爬出来', ''), false);
-  assert.equal(hasUnconfirmedWakeTime('十点多才从被子里爬出来', '08:44'), false);
+  assert.equal(hasUnconfirmedWakeTime('十点多才从被子里爬出来', '08:44'), true);
   assert.equal(hasUnconfirmedWakeTime('平时计划8:00起床，今天8:44醒来', '08:44'), false);
   assert.equal(hasUnconfirmedWakeTime('平时计划8:00起床，今天8:44醒来', '08:00'), true);
   assert.equal(hasUnconfirmedWakeTime('早上8:44起床', '08:44'), false);
