@@ -169,7 +169,7 @@ test('creative work graph keeps fictional details under a work node', () => {
   assert.equal(graph.filter(x => x.subject === '瑠璃子').length, 1);
 });
 test('diary graph normalizes 08:44 vs 8:44 time spans and projects 1-hop dated facts onto character node', () => {
-  const d = { id: documentId(role.id, 'diary', '2026-11-01'), characterId: role.id, sessionId: 'original-session', kind: 'diary', day: '2026-11-01', title: '清晨记录', body: '今天8:44起床，在窗边书桌整理了读书笔记。', summary: '8:44起床，在窗边书桌整理了读书笔记。', createdAt: now, syncStatus: 'pending' };
+  const d = { id: documentId(role.id, 'diary', '2026-11-01'), characterId: role.id, sessionId: 'original-session', kind: 'diary', day: '2026-11-01', title: '清晨记录', body: '今天8:44起床，在窗边书桌整理了读书笔记。', summary: '8:44起床，在窗边书桌整理了读书笔记。', createdAt: now, syncStatus: 'pending', timelineFacts: { wakeTime: '08:44', wakeSource: 'manual' } };
   const c = graphContext(d, memoryPayload(d), '瑠璃子');
   const extracted = JSON.stringify([
     { subject: c.recordNode, relationship: '记录中作息', object: '08:44 起床' },
@@ -180,4 +180,8 @@ test('diary graph normalizes 08:44 vs 8:44 time spans and projects 1-hop dated f
   assert.ok(graph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01作息' && x.object === '8:44起床'));
   assert.ok(graph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01地点' && x.object === '窗边书桌'));
   assert.ok(graph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01动作' && x.object === '整理了读书笔记'));
+  const legacy = { ...d, timelineFacts: { wakeTime: '08:44', wakeSource: 'diary' } };
+  const legacyGraph = readTriples(buildGraph(extracted, graphContext(legacy, memoryPayload(legacy), '瑠璃子'), legacy));
+  assert.ok(legacyGraph.some(x => x.subject === c.recordNode && x.relationship === '记录中作息'));
+  assert.ok(!legacyGraph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01作息'));
 });

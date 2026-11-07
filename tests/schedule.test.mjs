@@ -371,7 +371,7 @@ test('Point 4: runBackground pre-generates tomorrow schedule in the evening when
     nodes: templateItems('restday')
   });
 
-  const res = await runBackground(env.client, env.store, { now: eveningNow, autoPlan: true });
+  const res = await runBackground(env.client, env.store, { now: eveningNow });
   assert.equal(res.status, 'ok');
 
   // Verify tomorrow's plan was generated and saved into ll_plans
@@ -379,6 +379,7 @@ test('Point 4: runBackground pre-generates tomorrow schedule in the evening when
   const tomorrowPlan = await env.store.getPlan(env.character.id, tomorrow);
   assert.ok(tomorrowPlan, 'Tomorrow plan must be pre-generated in the evening');
   assert.equal(tomorrowPlan.day, tomorrow);
+  assert.match(env.character.data.data.post_history_instructions, /明日安排（2026-11-02/);
 
   env.db.close();
 });

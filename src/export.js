@@ -1,6 +1,6 @@
 import { createZip, uint8ArrayToBase64, stringToBase64 } from './zip.js';
 import { readTriples } from './memory-graph.js';
-import { VERSION, extractWakeMention } from './core.js';
+import { VERSION, dailyTimelineFacts, extractWakeMention } from './core.js';
 
 /**
  * Safely extracts knowledge graph triples from a string or object.
@@ -66,14 +66,14 @@ export function consolidateKnowledgeGraph(documents = [], nativeMemories = []) {
  * @param {Array<object>} documents
  * @returns {object}
  */
-export function extractScheduleAndTimelineFacts(profile = {}, documents = []) {
+export function extractScheduleAndTimelineFacts(profile = {}, documents = [], { scenes = [], now = Date.now() } = {}) {
   const dailyFacts = {};
   for (const doc of (documents || [])) {
     if (doc?.day && doc.timelineFacts) {
       if (!dailyFacts[doc.day] || doc.kind === 'diary') {
         dailyFacts[doc.day] = doc.timelineFacts;
       }
-    } else if (doc?.day) {
+    } else if (doc?.day && doc.kind === 'diary') {
       const wake = extractWakeMention(doc.summary) || extractWakeMention(doc.body);
       if (wake && (!dailyFacts[doc.day] || doc.kind === 'diary')) {
         dailyFacts[doc.day] = {
@@ -85,6 +85,10 @@ export function extractScheduleAndTimelineFacts(profile = {}, documents = []) {
         };
       }
     }
+  }
+  for (const day of Object.keys(profile.wakeRecords || {})) {
+    const facts = dailyTimelineFacts(profile, scenes, day, now, documents);
+    if (facts.wakeTime) dailyFacts[day] = facts;
   }
 
   return {
@@ -167,7 +171,7 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
   const nativeMemories = await fetchAllNativeMemories(client, characterId);
 
   // 6. Extract Schedule and Timeline Facts & Plans
-  const scheduleFacts = extractScheduleAndTimelineFacts(profile, documents);
+  const scheduleFacts = extractScheduleAndTimelineFacts(profile, documents, { scenes, now });
 
   let plans = [];
   try {
@@ -199,13 +203,13 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
     return {
       day,
       characterId,
-      plannedSleepStart: profile?.settings?.sleepStart || '23:30',
-      plannedWakeTime: profile?.settings?.sleepEnd || '08:00',
+      plannedSleepStart: fact.plannedSleepStart || profile?.settings?.sleepStart || '23:30',
+      plannedWakeTime: fact.plannedWakeTime || profile?.settings?.sleepEnd || '08:00',
       wakeTime: fact.wakeTime || '',
       wakePhrase: fact.wakePhrase || '',
-      wakeSource: fact.wakeSource || 'diary',
+      wakeSource: fact.wakeSource || 'schedule',
       wakeSummary: fact.wakeSummary || '',
-      firstAwakeTime: fact.firstAwakeTime || fact.wakeTime || '',
+      firstAwakeTime: fact.firstAwakeTime ?? (fact.wakeSource === 'scene' ? fact.wakeTime || '' : ''),
       timelineItems: fact.timelineItems || [],
       todayDiaryTitle: diaryDoc?.title || fact.todayDiaryTitle || '',
       todayDiarySummary: diaryDoc?.summary || fact.todayDiarySummary || '',

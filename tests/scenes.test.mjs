@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { createStore } from '../src/store.js';
+import { createStore, SQL } from '../src/store.js';
 import { createProfile, epoch, makeSnapshot, templatePlan, validateScene } from '../src/core.js';
-import { generateCurrentScene, generateDocument, generatePlan, refreshLife, runBackground } from '../src/workflow.js';
+import { generateCurrentScene, generateDocument, generatePlan, refreshLife, runBackground, saveManualPlan } from '../src/workflow.js';
 
 const day = '2026-11-01', at = minute => epoch(day, minute);
 const character = { id: 'scene-a', data: { data: { name: '璃', description: '银白色长发，狐狸耳与尾巴，住在自己的公寓。', personality: '细心，喜欢阅读。', scenario: '周末在家。' } } };
@@ -31,10 +31,12 @@ test('0.1 profiles gain scene defaults without losing plans, settings or archive
   const f = await fixture(t), p = await f.store.getProfile(character.id);
   p.schema = 1; delete p.settings.autoScene; delete p.currentScene; p.settings.home = '旧住处'; p.state.energy = 42;
   p.plans[day] = { source: 'manual', nodes: templatePlan(day, p) };
-  await f.store.putProfile(p); await f.store.putDoc({ id: 'old', characterId: character.id, day, kind: 'diary', createdAt: at(600), body: '旧日记', syncStatus: 'written', memoryId: 66 });
+  await f.store.query(SQL.putProfile, [p.characterId, JSON.stringify(p)]);
+  await f.store.putDoc({ id: 'old', characterId: character.id, day, kind: 'diary', createdAt: at(600), body: '旧日记', syncStatus: 'written', memoryId: 66 });
   const migrated = await f.store.getProfile(character.id);
   assert.equal(migrated.schema, 3); assert.equal(migrated.settings.autoScene, true); assert.equal(migrated.settings.home, '旧住处'); assert.equal(migrated.state.energy, 42);
-  assert.deepEqual(migrated.plans, p.plans); assert.equal((await f.store.getDoc('old')).memoryId, 66); assert.equal(f.requests.length, 0);
+  assert.deepEqual(migrated.plans[day].nodes, p.plans[day].nodes); assert.equal(migrated.plans[day].source, 'manual');
+  assert.equal((await f.store.getDoc('old')).memoryId, 66); assert.equal(f.requests.length, 0);
 });
 
 test('same node and phase reuse SQLite cache; forced regeneration archives a new revision', async t => {
@@ -101,7 +103,8 @@ test('failed first generation is not saved as an experience or retried on every 
 test('auto-off does not call the model; manual scene is preserved and recorded only when current', async t => {
   const f = await fixture(t), p = await f.store.getProfile(character.id); p.settings.autoScene = false;
   const nodes = templatePlan(day, p); const current = nodes.find(n => n.start <= 860 && n.end > 860); current.source = 'manual'; current.scene = '用户手动填写的当前场景。';
-  nodes[nodes.length - 1].scene = '未来的手动睡前场景'; nodes[nodes.length - 1].source = 'manual'; p.plans[day] = { source: 'manual', nodes };
+  nodes[nodes.length - 1].scene = '未来的手动睡前场景'; nodes[nodes.length - 1].source = 'manual';
+  await f.store.savePlan(character.id, day, { source: 'manual', nodes });
   await f.store.putProfile(p); const result = await refreshLife(f.client, f.store, character, { now: at(860) });
   assert.equal(result.scene.record.source, 'manual'); assert.equal(result.scene.record.scene, current.scene); assert.equal(f.requests.length, 0);
   assert.equal((await f.store.scenes(character.id)).length, 1);
@@ -112,7 +115,9 @@ test('schedule edits and character identities invalidate scene cache independent
   const f = await fixture(t); const first = await generateCurrentScene(f.client, f.store, character, { now: at(860) });
   const changed = structuredClone(character); changed.data.data.description = '现在是黑色短发。';
   const second = await generateCurrentScene(f.client, f.store, changed, { now: at(861) }); assert.notEqual(first.record.key, second.record.key);
-  const p = await f.store.getProfile(character.id), nodes = templatePlan(day, p); nodes.find(n => n.start <= 860 && n.end > 860).summary = '新的活动'; p.plans[day] = { source: 'manual', nodes }; await f.store.putProfile(p);
+  const p = await f.store.getProfile(character.id), nodes = templatePlan(day, p);
+  nodes.find(n => n.start <= 860 && n.end > 860).summary = '新的活动';
+  await saveManualPlan(f.client, f.store, changed, day, nodes, { now: at(861) });
   const third = await generateCurrentScene(f.client, f.store, changed, { now: at(862) }); assert.notEqual(second.record.key, third.record.key);
 });
 

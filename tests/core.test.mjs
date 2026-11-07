@@ -72,14 +72,21 @@ test('documents validate model output and keep dream provenance in native memory
 test('wake extraction, daily timeline facts and reversible card sync block stay consistent', () => {
   assert.deepEqual(extractWakeMention('今天早上8:44起床，喝了一杯水'), { phrase: '早上8:44起床', time: '08:44' });
   assert.deepEqual(extractWakeMention('8点半醒来'), { phrase: '8点半醒来', time: '08:30' });
+  assert.equal(extractWakeMention('十点多才从被子里爬出来').time, '10:00');
   const p = createProfile(character, epoch(day, 524));
   const morningScene = { id: 'sc-1', characterId: character.id, day, start: epoch(day, 480), end: epoch(day, 525), phase: 'awake', summary: '起身与用餐', location: '家里', scene: '8:44 刚收拾好桌面准备吃早饭。', generatedAt: epoch(day, 524) };
-  const facts = dailyTimelineFacts(p, [morningScene], day, epoch(day, 900), []);
-  assert.equal(facts.wakeTime, '08:44');
+  const now = epoch(day, 900);
+  const olderDiary = { day, characterId: character.id, kind: 'diary', summary: '今天10:00起床' };
+  const facts = dailyTimelineFacts(p, [morningScene], day, now, [olderDiary]);
+  assert.equal(facts.plannedWakeTime, '08:00');
+  assert.equal(facts.firstAwakeTime, '08:44');
+  assert.equal(facts.wakeTime, '');
   assert.equal(facts.wakeSource, 'scene');
-  const block = buildCardSyncBlock(p, [morningScene], [], epoch(day, 900));
+  assert.doesNotMatch(buildCardSyncBlock(p, [morningScene], [olderDiary], now), /10:00起床/);
+  p.wakeRecords[day] = { at: epoch(day, 522) };
+  const block = buildCardSyncBlock(p, [morningScene], [olderDiary], now);
   assert.ok(block.startsWith(CARD_SYNC_START) && block.endsWith(CARD_SYNC_END));
-  assert.match(block, /08:44/);
+  assert.match(block, /计划 08:00 结束休息；首个清醒片段 08:44；已确认 08:42 起床/);
   const original = '保持角色一贯温和克制的语气。';
   const merged = applyCardSyncBlock(original, block);
   assert.ok(merged.startsWith(original));

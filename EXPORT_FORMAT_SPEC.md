@@ -276,6 +276,10 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `profile.plans[day].nodes[].location`| `string` | **REQUIRED** | 1–80 字符 | 节点活动发生地点。 | Location |
 | `profile.plans[day].nodes[].scene` | `string` | **REQUIRED** | 0–500 字符 | 节点附带的静态预设场景描述（可为空串）。 | Static Scene Prompt |
 | `profile.plans[day].nodes[].source` | `string` | **REQUIRED** | `"template"` \| `"generated"` \| `"manual"` | 节点来源。 | Provenance |
+| `profile.wakeRecords` | `object` | OPTIONAL | 键为生活时区日期 `YYYY-MM-DD` | 每日手动确认的起床记录。 | Temporal Provenance |
+| `profile.wakeRecords[day].at` | `integer` | REQUIRED if present | Unix 毫秒 | 起床时刻。 | Confirmed Wake Time |
+| `profile.wakeRecords[day].recordedAt` | `integer` | REQUIRED if present | Unix 毫秒 | 确认记录的写入时刻。 | Recorded Time |
+| `profile.wakeRecords[day].timezone` | `string` | REQUIRED if present | IANA 时区 | 输入起床时刻时使用的生活时区。 | Source Timezone |
 | `profile.cardSync.hash` | `string` | **REQUIRED** | 哈希字符串或空串 | 最近一次同步到角色卡的文本哈希值（用于幂等比对）。 | Sync Hash |
 | `profile.cardSync.syncedAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 ($\ge 0$) | 最近一次成功写入角色卡的时间戳。 | Sync Timestamp |
 | `profile.cardSync.day` | `string` | **REQUIRED** | `"YYYY-MM-DD"` 或空串 | 同步内容对应的自然日期。 | Sync Date |
@@ -295,9 +299,9 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `[].characterId` | `string` | **REQUIRED** | 1–128 字符 | 事实归属的角色 ID。 | `agent_id` |
 | `[].plannedSleepStart` | `string` | **REQUIRED** | `"HH:MM"` | 当日规划的就寝时间。 | Planned Sleep Time |
 | `[].plannedWakeTime` | `string` | **REQUIRED** | `"HH:MM"` | 当日规划的早晨起床时间。 | Planned Wake Time |
-| `[].wakeTime` | `string` | **REQUIRED** | `"HH:MM"` 或空串 | 结算出的实际确凿起床时间（如 `"08:15"`）。 | Zep: Temporal Wake Fact<br>Letta: Core Fact |
+| `[].wakeTime` | `string` | **REQUIRED** | `"HH:MM"` 或空串 | 新记录只在手动确认后填入起床时间。旧文稿可保留其归档时记载的时间。 | Zep: Temporal Wake Fact<br>Letta: Core Fact |
 | `[].wakePhrase` | `string` | **REQUIRED** | 字符串 (如 `"08:15起身"`) | 起床判定的原始短语或证据。 | Grounding Evidence |
-| `[].wakeSource` | `string` | **REQUIRED** | `"diary"` \| `"scene"` \| `"sleeping"` \| `"schedule"` | 起床时间的证据来源（日记自述、场景记录、仍处于睡眠、作息规划推算）。 | Fact Provenance |
+| `[].wakeSource` | `string` | **REQUIRED** | `"manual"` \| `"diary"` \| `"scene"` \| `"sleeping"` \| `"schedule"` | `manual` 表示手动确认。其余值标记可用的参考来源或旧文稿的归档来源。 | Fact Provenance |
 | `[].wakeSummary` | `string` | **REQUIRED** | 详细说明字符串 | 人类可读的起床与作息事实长句，直接用于向角色卡或 Core Memory 交代作息。 | Core Memory Fact Fragment |
 | `[].firstAwakeTime` | `string` | **REQUIRED** | `"HH:MM"` 或空串 | 当日首个记录到的清醒微观场景时刻。 | Temporal Anchor |
 | `[].timelineItems[]` | `array<object>` | **REQUIRED** | 最多 6 条近期时间线 | 当日已发生的关键节点时间线概览。 | Episodic Timeline |

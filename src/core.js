@@ -41,7 +41,7 @@ export function createProfile(character, now = Date.now()) {
   return { schema: 3, characterId: character.id, name: character.data.data.name || '未命名角色', createdAt: now,
     settings: { timezone: 'Asia/Shanghai', home: '', sleepStart: '23:30', sleepEnd: '08:00', healthNote: '', weatherNote: '', weatherCity: '', weatherAt: 0, autoScene: true, autoPlan: false, background: false, autoWrite: false, syncCard: true, memorySessionMode: 'isolated', diaryHour: 21, dayType: '', holidayNotes: '', syncPrecision: 'halfhour', dayTypes: clone(DEFAULT_DAY_TYPES), extraRules: '', voiceRules: true, businessPriority: true, wokenBriefRule: true, customVoiceRules: '', planAheadHour: 22, tomorrowAfterHour: 18 },
     state: { energy: 70, hunger: 25, mood: .15, arousal: .4, updatedAt: now, awakeUntil: 0, lastSleepEnd: 0, recentSleepHours: 0, appliedNodes: [], seenMessages: [] },
-    plans: {}, selectedSessionId: '', lastNativeAt: 0, lastRunAt: 0, calendar: [], sceneIdentity: '', currentScene: null, sceneAttempt: null,
+    plans: {}, wakeRecords: {}, selectedSessionId: '', lastNativeAt: 0, lastRunAt: 0, calendar: [], sceneIdentity: '', currentScene: null, sceneAttempt: null,
     cardSync: { hash: '', syncedAt: 0, day: '', status: 'idle', error: '', preview: '' } };
 }
 export function upgradeProfile(input) {
@@ -217,19 +217,41 @@ export function applyCardSyncBlock(existingText = '', block = '') {
   if (!cleanBlock) return base;
   return base ? `${base}\n\n${cleanBlock}` : cleanBlock;
 }
-export function extractWakeMention(text = '') {
-  const m = /(?:(?:早上|清晨|上午|早晨)\s*)?(\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*点(?:\s*(?:半|\d{1,2}\s*分?))?)\s*(?:才|左右|前后|刚)?\s*(?:起床|醒来|起身|睡醒|睁开?眼)/.exec(String(text || ''));
-  if (!m) return null;
-  const rawTime = m[1].replace(/\s+/g, '');
-  let h = 0, min = 0;
-  if (/[:：]/.test(rawTime)) [h, min] = rawTime.split(/[:：]/).map(Number);
-  else {
-    const pm = /^(\d{1,2})点(?:(半)|(\d{1,2})分?)?$/.exec(rawTime);
-    if (!pm) return null;
-    h = Number(pm[1]); min = pm[2] ? 30 : pm[3] ? Number(pm[3]) : 0;
+const wakeMentionPattern = /(?:(?:凌晨|早上|清晨|上午|早晨)\s*)?(\d{1,2}\s*[:：]\s*\d{2}|(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})\s*点(?:\s*(?:半|\d{1,2}\s*分?|[零〇一二两三四五六七八九十]{1,3}\s*分?))?)\s*(?:(?:多|才|左右|前后|刚)\s*)*(?:起床|醒来|起身|睡醒|睁开?眼|(?:从(?:被窝|被子|床)(?:里|上)?\s*)?爬(?:起来|出来|下床))/g;
+
+function chineseClockNumber(value) {
+  if (/^\d+$/.test(value)) return Number(value);
+  const digits = '零一二三四五六七八九';
+  const [first, last] = value.replace(/两/g, '二').replace(/〇/g, '零').split('十');
+  if (last === undefined) return first.length === 1 ? digits.indexOf(first) : NaN;
+  const tens = first ? digits.indexOf(first) : 1;
+  const ones = last ? digits.indexOf(last) : 0;
+  return tens < 0 || ones < 0 ? NaN : tens * 10 + ones;
+}
+
+export function extractWakeMentions(text = '') {
+  const mentions = [];
+  for (const match of String(text || '').matchAll(wakeMentionPattern)) {
+    const raw = match[1].replace(/\s+|分/g, '');
+    const [hours, minutes = '0'] = raw.split(/[:：点]/);
+    const h = chineseClockNumber(hours);
+    const m = minutes === '半' ? 30 : chineseClockNumber(minutes || '0');
+    if (h >= 0 && h < 24 && m >= 0 && m < 60) mentions.push({ phrase: match[0].trim(), time: `${pad(h)}:${pad(m)}` });
   }
-  if (!Number.isInteger(h) || !Number.isInteger(min) || h < 0 || h > 23 || min < 0 || min > 59) return null;
-  return { phrase: m[0].trim(), time: `${pad(h)}:${pad(min)}` };
+  return mentions;
+}
+
+export function extractWakeMention(text = '') { return extractWakeMentions(text)[0] || null; }
+
+export function confirmedWakeTime(profile, day, now) {
+  const at = profile.wakeRecords?.[day]?.at;
+  if (!Number.isSafeInteger(at) || at <= 0 || at > now) return '';
+  const local = parts(at, profile.settings.timezone);
+  return local.day === day ? hhmm(local.minute) : '';
+}
+
+export function hasUnconfirmedWakeTime(text, confirmedTime) {
+  return extractWakeMentions(text).some(mention => mention.time !== confirmedTime);
 }
 export function dailyTimelineFacts(profile, scenes = [], day = null, now = Date.now(), docs = []) {
   const tz = profile.settings.timezone, targetDay = day || parts(now, tz).day;
@@ -245,22 +267,14 @@ export function dailyTimelineFacts(profile, scenes = [], day = null, now = Date.
   const firstAwakeTime = firstAwakeMinute === null ? '' : hhmm(firstAwakeMinute);
   const todayDiary = docs.find(d => d.characterId === profile.characterId && d.day === targetDay && d.kind === 'diary') || null;
   const todayDream = docs.find(d => d.characterId === profile.characterId && d.day === targetDay && d.kind === 'dream') || null;
-  const diaryWake = todayDiary ? (extractWakeMention(todayDiary.summary) || extractWakeMention(todayDiary.body)) : null;
-  const nowParts = parts(now, tz), currentPhase = sleepPhase(profile, now);
-  let wakeTime = '', wakePhrase = '', wakeSource = 'schedule', wakeSummary = '';
-  if (diaryWake) {
-    wakeTime = diaryWake.time; wakePhrase = diaryWake.phrase; wakeSource = 'diary';
-    wakeSummary = `${diaryWake.time}（日记记录“${diaryWake.phrase}”；日常作息设定 ${plannedSleepStart}–${plannedWakeTime}）`;
-  } else if (firstAwakeScene && (firstAwakeMinute <= plannedWakeMinute + 180 || /起身|起床|醒|早|晨/.test(firstAwakeScene.summary) || (morningSleep && firstAwakeScene.start === morningSleep.end))) {
-    wakeTime = firstAwakeTime; wakePhrase = `${firstAwakeTime}起身`; wakeSource = 'scene';
-    wakeSummary = `${firstAwakeTime}（首个清醒片段“${firstAwakeScene.summary}”；日常作息设定 ${plannedSleepStart}–${plannedWakeTime}）`;
-  } else if (nowParts.day === targetDay && currentPhase !== 'awake' && nowParts.minute < plannedWakeMinute + 60) {
-    wakeSource = 'sleeping';
-    wakeSummary = `尚未起床（当前${PHASES[currentPhase]}，预计 ${plannedWakeTime} 结束休息）`;
-  } else {
-    wakeTime = plannedWakeTime;
-    wakeSummary = `按作息设定约 ${plannedWakeTime} 结束休息${firstAwakeTime ? `（当日首个记录片段为 ${firstAwakeTime} ${firstAwakeScene.summary}）` : '（当日尚未记录清晨片段）'}`;
-  }
+  const wakeTime = confirmedWakeTime(profile, targetDay, now);
+  const wakePhrase = wakeTime ? `${wakeTime}起床` : '';
+  const wakeSource = wakeTime ? 'manual' : firstAwakeTime ? 'scene' : 'schedule';
+  const wakeSummary = [
+    `计划 ${plannedWakeTime} 结束休息`,
+    firstAwakeTime && `首个清醒片段 ${firstAwakeTime}`,
+    wakeTime ? `已确认 ${wakeTime} 起床` : '实际起床时间未确认'
+  ].filter(Boolean).join('；');
   const timelineItems = dayScenes.slice(-6).map(r => ({ time: hhmm(parts(r.generatedAt, tz).minute), until: hhmm(parts(r.experiencedUntil, tz).minute), summary: r.summary, location: r.location, phase: r.phase }));
   return { day: targetDay, plannedSleepStart, plannedWakeTime, wakeTime, wakePhrase, wakeSource, wakeSummary, firstAwakeTime, timelineItems, todayDiaryTitle: todayDiary?.title || '', todayDiarySummary: todayDiary?.summary || '', todayDreamTitle: todayDream?.title || '', todayDreamSummary: todayDream?.summary || '' };
 }
@@ -279,13 +293,15 @@ export function buildCardSyncBlock(profile, scenes = [], docs = [], now = Date.n
 
   const lines = [
     CARD_SYNC_START,
-    `以下为${profile.name}在 ${snap.day} 的生活状态快照（仅在涉及该日作息、起床时间或当前动态时保持一致，自然融入语气，不机械背诵；双方互动以真实聊天记录为准）：`,
+    `以下为${profile.name}在 ${snap.day} 的生活状态快照（自然融入语气；双方互动以真实聊天记录为准。精确起床时间以已确认的时间为准，未确认时保留不确定性）：`,
     `- 状态时刻：${timeStr} · ${snap.sleepPhaseLabel} · 心情${snap.mood} · 位于${snap.location}`,
     `- 今日作息与起床：${facts.wakeSummary}`,
     `- 当前日程节点：${snap.current ? `${hhmm(snap.current.start)}–${hhmm(snap.current.end)} ${snap.current.summary}` : snap.activity}${snap.scene ? `（${snap.scene.slice(0, 110)}${snap.scene.length > 110 ? '…' : ''}）` : ''}`
   ];
   if (facts.timelineItems.length) lines.push(`- 今日已记录经历：${facts.timelineItems.map(x => `${x.time} ${x.summary}`).join('；')}`);
-  if (facts.todayDiarySummary) lines.push(`- 今日日记摘要：《${facts.todayDiaryTitle}》${facts.todayDiarySummary.slice(0, 180)}`);
+  if (facts.todayDiarySummary && !hasUnconfirmedWakeTime(`${facts.todayDiaryTitle}\n${facts.todayDiarySummary}`, facts.wakeTime)) {
+    lines.push(`- 今日日记摘要：《${facts.todayDiaryTitle}》${facts.todayDiarySummary.slice(0, 180)}`);
+  }
   if (facts.todayDreamSummary) lines.push(`- 今日梦境备忘（仅作梦境，非现实经历）：《${facts.todayDreamTitle}》${facts.todayDreamSummary.slice(0, 120)}`);
 
   if (snap.sleepPhase !== 'awake' && profile.settings?.wokenBriefRule !== false) {
@@ -323,9 +339,9 @@ export function memoryPayload(document, opts = {}) {
   const mode = opts.memorySessionMode || document.memorySessionMode;
   const sessionId = opts.sessionId || (mode === 'isolated' ? archiveSessionId(document.characterId) : mode === 'active' ? (document.sessionId || archiveSessionId(document.characterId)) : (document.sessionId || archiveSessionId(document.characterId)));
   const provenance = document.kind === 'dream' ? '这是梦境，不是双方真实经历。' : document.kind === 'work' ? '这是创作作品，不是现实事件。' : '角色当日第一人称生活与作息记录；涉及与用户的互动以实际聊天为准。';
-  const wakeTime = document.kind === 'diary' ? document.timelineFacts?.wakeTime || '' : '';
+  const wakeTime = document.kind === 'diary' && document.timelineFacts?.wakeSource === 'manual' ? document.timelineFacts.wakeTime : '';
   const summaryText = String(document.summary || '');
-  const hasWakeInSummary = !wakeTime || summaryText.includes(wakeTime) || summaryText.includes(wakeTime.replace(/^0/, ''));
-  const wakeTag = wakeTime && !hasWakeInSummary && ['diary', 'scene'].includes(document.timelineFacts?.wakeSource) ? `（${wakeTime}起身）` : '';
+  const hasWakeInSummary = extractWakeMentions(summaryText).some(mention => mention.time === wakeTime);
+  const wakeTag = wakeTime && !hasWakeInSummary ? `（已确认 ${wakeTime} 起床）` : '';
   return { id: opts.id ?? 0, character_id: document.characterId, session_id: sessionId, rawText: `${marker(document.id)}\n类型：${DOC_KINDS[document.kind]}；日期：${document.day}。${provenance}\n标题：${document.title}\n${document.body}`, timestamp: opts.timestamp ?? document.createdAt, summary: `${DOC_KINDS[document.kind]}（${document.day}）《${document.title}》${wakeTag}：${document.summary}`, knowledgeGraphJSON: opts.knowledgeGraphJSON ?? null };
 }

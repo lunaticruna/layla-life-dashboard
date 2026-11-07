@@ -921,4 +921,13 @@ test('export: schedule extraction extracts timelineFacts and falls back to body 
   assert.equal(extracted.dailyFacts['2026-11-01'].wakePhrase, '07:45起身');
   assert.equal(extracted.dailyFacts['2026-11-02'].wakeTime, '08:30');
   assert.equal(extracted.dailyFacts['2026-11-02'].wakePhrase, '08:30 起床');
+
+  const day = '2026-11-02', role = { id: 'test-role', data: { data: { name: '澪' } } };
+  const saved = createProfile(role, epoch(day, 600));
+  saved.wakeRecords[day] = { at: epoch(day, 524) };
+  const confirmed = extractScheduleAndTimelineFacts(saved, docs, { now: epoch(day, 600) }).dailyFacts[day];
+  assert.equal(confirmed.plannedWakeTime, '08:00');
+  assert.equal(confirmed.firstAwakeTime, '');
+  assert.equal(confirmed.wakeTime, '08:44');
+  assert.equal(confirmed.wakeSource, 'manual');
 });
