@@ -351,13 +351,14 @@ export async function generateDocument(client, store, character, kind, opts = {}
       { role: 'user', content: JSON.stringify(context) }
     ], opts);
     const content = validateDocument(parseJSON(text));
-    const keepMemory = existing?.memoryId && Number.isSafeInteger(existing.memoryId) && existing.memoryId > 0;
+    const existingMemoryId = (existing?.memoryId && Number.isSafeInteger(existing.memoryId) && existing.memoryId > 0) ? existing.memoryId : ((existing?.pendingWrite?.targetMemoryId && Number.isSafeInteger(existing.pendingWrite.targetMemoryId) && existing.pendingWrite.targetMemoryId > 0) ? existing.pendingWrite.targetMemoryId : null);
+    const keepMemory = Boolean(existingMemoryId);
     const document = {
       id, characterId: character.id, sessionId: existing?.sessionId || native.sessionId, kind, day, ...content,
       timelineFacts: { plannedSleepStart, plannedWakeTime, firstAwakeTime, wakeTime, wakePhrase, wakeSource, wakeSummary, timelineItems },
       createdAt: existing?.createdAt ?? now, updatedAt: now,
-      syncStatus: keepMemory ? 'stale' : 'pending',
-      memoryId: keepMemory ? existing.memoryId : null,
+      syncStatus: keepMemory ? 'stale' : 'pending', syncError: '', pendingWrite: null,
+      memoryId: keepMemory ? existingMemoryId : null,
       nativeTimestamp: keepMemory ? (existing.nativeTimestamp ?? existing.createdAt) : undefined,
       graphStatus: 'pending', graphError: '', graphDraftJSON: null, graphVerifiedJSON: null,
       retrievalStatus: 'unverified', retrievalCheckedAt: null, retrievalCheck: null, retrievalChecks: existing?.retrievalChecks || [],

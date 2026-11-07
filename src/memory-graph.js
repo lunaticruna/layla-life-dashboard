@@ -5,7 +5,20 @@ import { DOC_KINDS, extractWakeMentions, hasUnconfirmedWakeTime, parseJSON } fro
 export const GRAPH_LABELS = { pending: '待交还后生成', missing: '旧记录待补全', generating: '生成未完成，可重试', draft: '已生成，待写入', writing: '待核对回执', uncertain: '待核对原生图谱', error: '补全未完成', ready: '原生图谱已核对' };
 export const RETRIEVAL_LABELS = { unverified: '尚未验收', passed: '用户验收通过', failed: '用户验收未通过' };
 export function upgradeDocument(d) {
-  return { ...d, graphStatus: d.graphStatus || (d.syncStatus === 'written' ? 'missing' : 'pending'), retrievalStatus: ['passed', 'failed'].includes(d.retrievalStatus) ? d.retrievalStatus : 'unverified' };
+  const pw = d.pendingWrite && typeof d.pendingWrite === 'object' && !Array.isArray(d.pendingWrite) && ['create', 'update'].includes(d.pendingWrite.op)
+    ? {
+        op: d.pendingWrite.op,
+        targetMemoryId: Number.isSafeInteger(d.pendingWrite.targetMemoryId) && d.pendingWrite.targetMemoryId > 0 ? d.pendingWrite.targetMemoryId : null,
+        rawText: typeof d.pendingWrite.rawText === 'string' ? d.pendingWrite.rawText : '',
+        summary: typeof d.pendingWrite.summary === 'string' ? d.pendingWrite.summary : '',
+        payloadHash: typeof d.pendingWrite.payloadHash === 'string' ? d.pendingWrite.payloadHash : '',
+        graphJSON: typeof d.pendingWrite.graphJSON === 'string' ? d.pendingWrite.graphJSON : null,
+        previousBasis: typeof d.pendingWrite.previousBasis === 'string' ? d.pendingWrite.previousBasis : null,
+        previousGraphJSON: typeof d.pendingWrite.previousGraphJSON === 'string' ? d.pendingWrite.previousGraphJSON : null,
+        attemptedAt: Number.isSafeInteger(d.pendingWrite.attemptedAt) && d.pendingWrite.attemptedAt >= 0 ? d.pendingWrite.attemptedAt : (Number.isFinite(d.pendingWrite.attemptedAt) && d.pendingWrite.attemptedAt >= 0 ? Math.trunc(d.pendingWrite.attemptedAt) : 0)
+      }
+    : null;
+  return { ...d, syncError: typeof d.syncError === 'string' ? d.syncError : '', pendingWrite: d.syncStatus === 'written' ? null : pw, graphStatus: d.graphStatus || (d.syncStatus === 'written' ? 'missing' : 'pending'), retrievalStatus: ['passed', 'failed'].includes(d.retrievalStatus) ? d.retrievalStatus : 'unverified' };
 }
 export function graphScope(d) { return `${DOC_KINDS[d.kind]}（${d.day}）《${d.title}》`; }
 export function graphPrefix(d) { return d.kind === 'dream' ? '梦中' : d.kind === 'work' ? '作品中' : '记录中'; }
@@ -68,6 +81,41 @@ export function isEmptyGraph(value) {
 }
 export function sameGraph(a, b) {
   try { return JSON.stringify(readTriples(a).map(t => JSON.stringify(t)).sort()) === JSON.stringify(readTriples(b).map(t => JSON.stringify(t)).sort()); } catch { return false; }
+}
+export function isStaleNativeGraph(value, d, native) {
+  let triples;
+  try { triples = readTriples(value); } catch { return false; }
+  const expectedScope = graphScope(d);
+  const scopePrefix = `${DOC_KINDS[d.kind]}（${d.day}）《`;
+  const detailPrefix = graphPrefix(d);
+  const rawText = String(native?.rawText ?? '');
+  const summary = String(native?.summary ?? '');
+  for (const t of triples) {
+    if ((t.subject.startsWith(scopePrefix) && t.subject !== expectedScope) || (t.object.startsWith(scopePrefix) && t.object !== expectedScope)) return true;
+    if (t.relationship === '记录日期' && t.object !== d.day) return true;
+    if (t.relationship.startsWith(detailPrefix) || t.relationship.startsWith(d.day)) {
+      if (!groundObject(t.object, rawText, summary)) return true;
+    }
+  }
+  return false;
+}
+export function formatMemoryToast(d, demo = false) {
+  if (d?.syncStatus !== 'written') {
+    return {
+      text: d?.syncError || (d?.syncStatus === 'stale' ? '原生记忆仍为旧版本，尚未写入当前修改' : '尚未确认写入，请继续核对原生记忆'),
+      error: true
+    };
+  }
+  if (d.graphStatus === 'ready') {
+    return {
+      text: demo ? '模拟图谱已核对；没有改动真实角色' : '原生文本与图谱已核对，自然召回仍需真机验收',
+      error: false
+    };
+  }
+  return {
+    text: d.graphError ? `文本已保存，图谱未完成：${d.graphError}` : '文本已保存，可继续补全图谱',
+    error: Boolean(d.graphError)
+  };
 }
 export function buildGraph(text, context, d, opts = {}) {
   const rawDetails = readTriples(text);

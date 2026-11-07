@@ -272,7 +272,7 @@
 ### 3.1 导出模式与模式定义声明
 
 依据项目架构设计与审计准则，对导出相关实现进行了独立复核。在此做出审计认定：
-> **核心审计判定**：本次 Issue #1 的 4 项缺陷修复全部聚焦于运行时作息判定、并发控制、异常处理与记忆写入严格拦截，**没有对任何数据库表结构、也没有对任何导出备份的 JSON Schema 结构进行增删或重命名（No Export Schemas Were Changed）**。所有导出格式与规范文档 `EXPORT_FORMAT_SPEC.md`（v1.1.0）保持 **100% 的绝对一致性**。
+> **核心审计判定（阶段一 `f372547` 基线记录；后续在第六节 `#issuecomment-6705080726` 修复中已为 `documents/documents.json` 向后兼容新增可选字段 `syncError` 与 `pendingWrite`，详见第六节）**：本阶段 Issue #1 的 4 项初始缺陷修复全部聚焦于运行时作息判定、并发控制、异常处理与记忆写入严格拦截，在阶段一未改动任何导出备份 JSON Schema 结构，与规范文档 `EXPORT_FORMAT_SPEC.md`（v1.1.0）保持 **100% 的绝对一致性**。
 
 ---
 
@@ -327,7 +327,7 @@
 |---|---|---|---|---|---|
 | `[].id` | `string` | **REQUIRED** | `life-<charId>-<kind>-<day>` | 全局唯一主键 | **PASS** |
 | `[].kind` | `string` | **REQUIRED** | `"diary"` \| `"dream"` \| `"reflection"` \| `"work"` | 文稿性质 | **PASS** |
-| `[].syncStatus` | `string` | **REQUIRED** | `"pending"` \| `"writing"` \| `"written"` \| `"failed"` \| `"stale"` | 严格拦截时完好保留为 `"pending"` | **PASS** |
+| `[].syncStatus` | `string` | **REQUIRED** | `"pending"` \| `"sending"` \| `"uncertain"` \| `"written"` \| `"stale"`（兼容旧档 `"writing"` \| `"failed"`） | 严格拦截时完好保留为 `"pending"`；原位更新异常恢复详见第六节 | **PASS** |
 | `[].timelineFacts` | `object` \| `null`| **OPTIONAL** | DailyFact 结构 | 权威同步最新 profile 起床记录 | **PASS** |
 
 #### 6. §4.6 `scenes/scenes.json` 结构核验
@@ -502,8 +502,8 @@
 | **§4.10** | `fallback.json` 降级包 | 根对象内嵌 9 大核心构件 | `src/export.js:buildFallbackJson` | **100% 绝对一致**。单 JSON 结构与 PKZIP 归档具有完全的数据对称性。 |
 
 #### 2. 导出规范审计独立结论
-- **数据结构变动评估**：本次 P1 与 P2 修复均为底层词法解析、作息区间判定算法与内存调用时序重构，**未新增、未删除、未修改任何导出的 JSON 键名、字段层级、数据类型或枚举取值（Zero Schema Changes）**。
-- **规范文档与版本认定**：`EXPORT_FORMAT_SPEC.md`（v1.1.0）与当前导出代码处于 **100% 完美契合状态，无需修改规范文件，无需递增规范版本号**。维持 `exportVersion: "1.1.0"` 能够避免外部记忆消费管道（Mem0, Letta, Zep）产生误判，保障了系统的企业级向后兼容性。
+- **阶段二（`719f828`）数据结构变动评估**：阶段二 P1 与 P2 修复均为底层词法解析、作息区间判定算法与内存调用时序重构，在该阶段未修改导出 JSON 键名（注：后续阶段三 `#issuecomment-6705080726` 修复已为 `documents/documents.json` 向后兼容补充可选字段 `syncError` 与 `pendingWrite`，并同步更新 `EXPORT_FORMAT_SPEC.md` §4.5/§5.5/§5.10，详见第六节）。
+- **规范文档与版本认定**：维持 `exportVersion: "1.1.0"` 与 `specVersion: "1.1.0"` 向后兼容版本号能够避免外部记忆消费管道（Mem0, Letta, Zep）产生破坏性变更误判，保障系统的企业级向后兼容性。
 
 ---
 
@@ -558,9 +558,60 @@
 **综合审计评定**: **APPROVED / 100% PASS（全量合规，正式核准签发）**
 
 ---
-*联合签发：teamwork 实施与法医审计组*  
-*实施工程师：worker_issue1_2, worker_m2, worker_remediation, worker_m5_doc_git*  
-*独立法医审计：auditor_m4*  
-*规范挖掘审计：spec_miner_m1_3*  
+
+## 六、GitHub Issue #1 补充问题（`#issuecomment-6705080726` · P1：原位更新失败后旧版本被误判为新版本已写入）修复、回归测试与导出规范复核
+
+在提交 `719f828` 后，针对同日文稿重新整理并执行原位更新（in-place update）的异常恢复路径开展了定向验证（`#issuecomment-6705080726`），定位并修复了 **P1：原位更新失败后，旧版本被误判为新版本已写入** 问题。
+
+---
+
+### 6.1 缺陷现象与根因分析
+
+1. **复现链路**：
+   - 角色生成当日初版日记 A 并交还成功，获得宿主原生记忆 `memoryId = 100`（`syncStatus: 'written'`）；
+   - 同日点击「重新整理」（`generateDocument(..., { force: true })`）生成新版日记 B，保持同一 `d.id`（同一 `【Layla生活记录:...】` 标记）与原 `memoryId = 100`，状态置为 `syncStatus: 'stale'`；
+   - 调用 `writeMemory()` 原位更新 `#100`，在宿主落库前连接断开（宿主 `#100` 仍保留旧版 A 文本与图谱），`catch` 分支将本地 B 置为 `syncStatus: 'uncertain'`；
+   - 随后点击「核对写入」（`writeMemory(..., { reconcileOnly: true })`）。
+2. **根因定位**：
+   - 原实现未在发起宿主写入前持久化待写载荷意图（`pendingWrite`）；
+   - 当 `d.syncStatus` 从 `'stale'` 变为 `'uncertain'` 后，`reconcileOnly: true` 跳过了 `stale` 分支，直接进入首次写入回执核对路径，通过 `findWrittenMemory()` 命中 `id === 100` 且前缀标记相同的旧版原生记忆 A；
+   - 因缺乏预期 `rawText` / `summary` / `payloadHash` 比对，代码直接将旧版 A 当作新版 B 的成功回执，将本地 B 误标为 `syncStatus: 'written'`，甚至调用 `acceptGraph(d, native)` 把旧版 A 的图谱采纳为新版 B 的已核对图谱。
+
+---
+
+### 6.2 生产级修复实现
+
+1. **持久化预写意图 `pendingWrite`（`src/memory.js`、`src/memory-graph.js`、`src/workflow.js`）**：
+   - 在 `writeMemory()` 调用 `client.memories.createOrUpdate()` 之前（同时覆盖原位更新 `op: 'update'` 与首次新建 `op: 'create'`），先向 SQLite `ll_documents` 持久化 `d.syncStatus = 'sending'` 与结构化 `d.pendingWrite`：
+     - 包含 `op`、`targetMemoryId`、`rawText`、`summary`、`payloadHash`（`[rawText, summary]` 的 FNV-1a 哈希）、`graphJSON`、`previousBasis`（更新前宿主旧版基准签名）、`previousGraphJSON`、`attemptedAt`；
+   - 在 `upgradeDocument()` 中对 `syncError` 与 `pendingWrite` 进行向后兼容归一化（`syncStatus === 'written'` 时确保 `pendingWrite: null`），在 `generateDocument()` 重新整理时重置 `syncError: ''`、`pendingWrite: null`。
+2. **基于预期载荷的确定性只读版本核对与图谱独立校验（`src/memory.js`）**：
+   - 统一识别原位更新核对意图（`d.pendingWrite?.op === 'update'`、`stale` 或携带 `memoryId` 的 `sending`/`uncertain`）；
+   - **路径一（宿主已落库为新版 B 但回执丢失）**：`matchesPendingWrite(existing, pending)` 精确校验 `targetMemoryId`、`rawText`、`summary` 与 `payloadHash` 全部吻合后，在 **0 次原生写入调用** 下恢复 `syncStatus = 'written'`，清空 `pendingWrite` 与 `syncError`；图谱按独立回读规则校验（匹配 `expectedGraph` 才置为 `'ready'`；若为空置为 `'draft'`；若残留旧版 A 图谱则置为 `'uncertain'` 并告警，绝不误认旧版图谱）；
+   - **路径二（更新在宿主落库前中断，宿主仍为旧版 A）**：`reconcileOnly: true` 检测到载荷不匹配且宿主签名等于 `pending.previousBasis` 时，在 **0 次原生写入调用** 下保留原 `memoryId` 与宿主记忆 A，将本地 B 恢复为 `syncStatus = 'stale'`（`待更新记忆`，使界面恢复「更新原记忆」重试入口）并保留 `pendingWrite`（确保跨应用重启和重复核对完全幂等），同时在 `syncError` 写入清晰的新旧版本差异摘要；若宿主内容既非 B 也非更新前基准 A（如用户在 Layla 原生界面手动改成了第三版 C），则保持 `syncStatus = 'uncertain'` 并拦截盲目覆盖；
+   - **主动更新回执与回读双重校验**：在主动 `createOrUpdate` 返回后同时校验 `receipt` 与回读 `updated` 均满足 `matchesPendingWrite`，防止宿主静默忽略更新时被误标为 `written`；重试时自动复用基准一致的 `graphDraftJSON`，避免重复调用模型。
+3. **前端状态提示与防误报修复（`src/main.js`）**：
+   - 在 `memoryView()` 与阅读弹窗 `graphDetails()` 中展示非 `written` 状态下的 `d.syncError` 版本差异提示；
+   - 在 `memoryToast()` 中增加 `if (d.syncStatus !== 'written')` 守卫，当只读核对发现宿主仍为旧版本时弹出明确告警，不再误报“文本已保存”。
+
+---
+
+### 6.3 导出格式规范（`EXPORT_FORMAT_SPEC.md` v1.1.0）同步更新与向后兼容评估
+
+- 由于 `src/export.js` 直接将 `ll_documents` 中的 `Document` 数组序列化至 `documents/documents.json`（及单文件降级包的 `documents`），本次修复在 `EXPORT_FORMAT_SPEC.md`（保持 `exportVersion: "1.1.0"` / `specVersion: "1.1.0"` 向后兼容）第 `4.5` 节与第 `5.5`、`5.10` 节同步补齐了：
+  1. `syncStatus` 运行时完整枚举集 `"pending" | "sending" | "uncertain" | "written" | "stale"`（保留旧档 `"writing" | "failed"` 兼容说明）；
+  2. 新增向后兼容 **OPTIONAL** 字段 `[].syncError`（`string`）与 `[].pendingWrite`（`object | null`）及其全部 9 个原子叶子字段（`op`, `targetMemoryId`, `rawText`, `summary`, `payloadHash`, `graphJSON`, `previousBasis`, `previousGraphJSON`, `attemptedAt`），以及既有可选追踪字段字典定义。
+
+---
+
+### 6.4 回归测试与构建核验结果
+
+新增专项回归测试套件 `tests/regression_inplace_update_reconcile.test.mjs`（8 大端到端与对抗测试组），覆盖落库前中断只读核对、落库后丢回执只读恢复、模拟 `sending` 闪退及跨应用重启 SQLite 持久化区分、新版文本残留旧图谱独立隔离、首次新建丢回执后同日重整防误认（`BUG-1`）、图谱抽取失败后 `enrichMemory` 拦截旧版残留图谱（`BUG-2`）、前端 `formatMemoryToast` 提示防误报、仅正文变更对比、外部原生修订防覆盖以及备份导出字段核验：
+- `npm test`: **172/172 PASS (0 failed)**
+- `npm run test:ui`: **EXIT 0 (PASS)**
+- `npm run build`: **EXIT 0 (PASS)**
+
+---
+*联合签发：teamwork 实施与法医审计组 & Antigravity 工程修复复核*  
 *签发日期：2026-11-07*
 
