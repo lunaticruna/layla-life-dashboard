@@ -52,7 +52,8 @@ export function upgradeProfile(input) {
     dayTypes: (input.settings?.dayTypes && Array.isArray(input.settings.dayTypes) && input.settings.dayTypes.length) ? input.settings.dayTypes : clone(DEFAULT_DAY_TYPES)
   };
   const plans = (input.plans && typeof input.plans === 'object') ? input.plans : {};
-  return { ...base, ...input, schema: 3, settings, plans, state: { ...base.state, ...input.state }, cardSync: { ...base.cardSync, ...(input.cardSync || {}) } };
+  const wakeRecords = (input.wakeRecords && typeof input.wakeRecords === 'object' && !Array.isArray(input.wakeRecords)) ? { ...input.wakeRecords } : {};
+  return { ...base, ...input, schema: 3, settings, plans, wakeRecords, state: { ...base.state, ...input.state }, cardSync: { ...base.cardSync, ...(input.cardSync || {}) } };
 }
 export function templatePlan(day, profile) {
   const s = profile.settings, start = parseTime(s.sleepStart) ?? 1410, end = parseTime(s.sleepEnd) ?? 480;
@@ -93,7 +94,7 @@ export function validatePlan(raw, day, options = {}) {
   if (!nodes.some(n => n.kind === 'sleep')) throw new Error('日程需要至少一个睡眠节点');
   return nodes;
 }
-export function getNodes(profile, day) { return profile.plans[day]?.nodes || templatePlan(day, profile); }
+export function getNodes(profile, day) { return profile?.plans?.[day]?.nodes || templatePlan(day, profile); }
 export function contextAt(profile, ts = Date.now()) {
   const p = parts(ts, profile.settings.timezone), nodes = getNodes(profile, p.day);
   const index = nodes.findIndex(n => n.start <= p.minute && p.minute < n.end);
@@ -106,6 +107,10 @@ export function contextAt(profile, ts = Date.now()) {
 }
 export function sleepPhase(profile, ts, context = contextAt(profile, ts)) {
   if (!['sleep', 'nap'].includes(context.current?.kind)) return 'awake';
+  const sleepStartMin = parseTime(profile.settings?.sleepStart) ?? 1260;
+  const isMorningSleep = context.current?.kind === 'sleep' && (context.current.start === 0 || context.current.start < sleepStartMin);
+  const wakeAt = profile.wakeRecords?.[context.day]?.at;
+  if (isMorningSleep && Number.isSafeInteger(wakeAt) && wakeAt <= ts) return 'awake';
   if (profile.state.awakeUntil > ts) return 'woken';
   if (context.current.kind === 'nap') return 'light_sleep';
   let start = context.currentStart;
@@ -148,9 +153,13 @@ export function advanceProfile(input, now = Date.now(), messages = []) {
   while (cursor < now) {
     while (wi < wakes.length && wakes[wi].timestamp <= cursor) { state.awakeUntil = Math.max(state.awakeUntil, wakes[wi].timestamp + 30 * 60000); wi++; }
     const c = contextAt(profile, cursor);
-    const boundary = Math.min(c.currentEnd, cursor + 20 * 60000, now, wakes[wi]?.timestamp ?? Infinity, state.awakeUntil > cursor ? state.awakeUntil : Infinity);
+    const sleepStartMin = parseTime(profile.settings?.sleepStart) ?? 1260;
+    const isMorningSleep = c.current?.kind === 'sleep' && (c.current.start === 0 || c.current.start < sleepStartMin);
+    const wakeAt = profile.wakeRecords?.[c.day]?.at;
+    const isAwakeByRecord = isMorningSleep && Number.isSafeInteger(wakeAt) && wakeAt <= cursor;
+    const boundary = Math.min(c.currentEnd, cursor + 20 * 60000, now, wakes[wi]?.timestamp ?? Infinity, state.awakeUntil > cursor ? state.awakeUntil : Infinity, (isMorningSleep && Number.isSafeInteger(wakeAt) && wakeAt > cursor) ? wakeAt : Infinity);
     const end = Math.max(cursor + 1, boundary), h = (end - cursor) / 3600000;
-    const resting = ['sleep', 'nap'].includes(c.current?.kind) && state.awakeUntil <= cursor;
+    const resting = ['sleep', 'nap'].includes(c.current?.kind) && state.awakeUntil <= cursor && !isAwakeByRecord;
     const key = `${c.day}/${c.current?.id}`;
     if (c.current?.kind === 'meal' && !state.appliedNodes.includes(key)) { state.hunger = 12; state.appliedNodes.push(key); }
     state.energy = clamp(resting ? state.energy + (90 - state.energy) * (1 - Math.exp(-.35 * h)) : state.energy - (['work', 'study', 'travel'].includes(c.current?.kind) ? 4.2 : 2.6) * h, 0, 100);
@@ -217,13 +226,19 @@ export function applyCardSyncBlock(existingText = '', block = '') {
   if (!cleanBlock) return base;
   return base ? `${base}\n\n${cleanBlock}` : cleanBlock;
 }
-const wakeMentionPattern = /(?:(?:凌晨|早上|清晨|上午|早晨)\s*)?(\d{1,2}\s*[:：]\s*\d{2}|(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})\s*点(?:\s*(?:半|\d{1,2}\s*分?|[零〇一二两三四五六七八九十]{1,3}\s*分?))?)\s*(?:(?:多|才|左右|前后|刚)\s*)*(?:起床|醒来|起身|睡醒|睁开?眼|(?:从(?:被窝|被子|床)(?:里|上)?\s*)?爬(?:起来|出来|下床))/g;
+const wakeMentionPattern = /(?:(?:凌晨|早上|清晨|上午|早晨)\s*)?(?<![早晚迟慢快差好多少再有][了的]?\s*)(\d{1,2}\s*[:：]\s*\d{2}|(?:\d{1,2}|[零〇一二两三四五六七八九十]{1,3})\s*点(?:\s*(?:半|[零〇0]?\d{1,2}\s*分?|[零〇一二两三四五六七八九十]{1,3}\s*分?))?)\s*(?:(?:多|才|左右|前后|刚)\s*)*(?:起床|醒来|起身|睡醒|睁开?眼|(?:从(?:被窝|被子|床)(?:里|上)?\s*)?爬(?:起来|出来|下床))/g;
 
 function chineseClockNumber(value) {
-  if (/^\d+$/.test(value)) return Number(value);
+  if (value == null || value === '') return NaN;
+  const v = String(value).trim().replace(/两/g, '二').replace(/〇/g, '零');
+  if (/^\d+$/.test(v)) return Number(v);
   const digits = '零一二三四五六七八九';
-  const [first, last] = value.replace(/两/g, '二').replace(/〇/g, '零').split('十');
-  if (last === undefined) return first.length === 1 ? digits.indexOf(first) : NaN;
+  const stripped = v.replace(/^[零]+/, '');
+  if (stripped === '') return 0;
+  if (/^\d+$/.test(stripped)) return Number(stripped);
+  if (stripped.length === 1 && digits.indexOf(stripped) >= 0) return digits.indexOf(stripped);
+  const [first, last] = stripped.split('十');
+  if (last === undefined) return NaN;
   const tens = first ? digits.indexOf(first) : 1;
   const ones = last ? digits.indexOf(last) : 0;
   return tens < 0 || ones < 0 ? NaN : tens * 10 + ones;
@@ -231,30 +246,71 @@ function chineseClockNumber(value) {
 
 export function extractWakeMentions(text = '') {
   const mentions = [];
-  for (const match of String(text || '').matchAll(wakeMentionPattern)) {
+  const src = String(text || '');
+  for (const match of src.matchAll(wakeMentionPattern)) {
+    const matchIndex = match.index;
+    const preText = src.slice(0, matchIndex);
+
+    // 1. Exclude degree adverbs: e.g. 早一点/晚一点/慢一点/快一点/差一点/好一点/多一点/少一点
+    if (/[早晚迟慢快差好多少再有][了的]?\s*$/.test(preText) && /^[一1]\s*点/.test(match[1])) {
+      continue;
+    }
+
+    // 2. Exclude nap/midday/non-morning contexts: e.g. "午睡到两点半醒来", "小憩到14:30睡醒", "下午/傍晚/中午"
+    const clause = preText.split(/[，。！？；\n]/).pop() || '';
+    if (/(?:午睡|午休|小憩|打盹|中午|下午|傍晚|黄昏)(?:到|至|才|后|在|从)?\s*$/.test(clause) || /(?:午睡|午休|小憩|打盹|中午|下午|傍晚|黄昏)/.test(clause)) {
+      continue;
+    }
+    const sentence = preText.split(/[。！？\n]/).pop() || '';
+    if (/(?:午睡|午休|小憩|打盹)/.test(sentence) && !/(?:凌晨|清晨|早上|早晨)/.test(match[0])) {
+      continue;
+    }
+
+    // 3. Exclude plan comparisons and chat quotes: e.g. "平时计划8:00起床，今天8:44醒来", "你说早上8点起床"
+    if (/(?:计划|打算|原本|原定|平时|平常|习惯|一般)(?:[在为是约于]|大约)?\s*$/.test(clause.trim())) {
+      continue;
+    }
+    if (/(?:你说|听你说|你提到|聊天中?提到|你说过)\s*$/.test(clause.trim())) {
+      continue;
+    }
+
     const raw = match[1].replace(/\s+|分/g, '');
     const [hours, minutes = '0'] = raw.split(/[:：点]/);
     const h = chineseClockNumber(hours);
     const m = minutes === '半' ? 30 : chineseClockNumber(minutes || '0');
-    if (h >= 0 && h < 24 && m >= 0 && m < 60) mentions.push({ phrase: match[0].trim(), time: `${pad(h)}:${pad(m)}` });
+    if (h >= 0 && h < 24 && m >= 0 && m < 60) {
+      const isVague = /(?:点多|左右|前后|大概|大约|约\s*\d)/.test(match[0]);
+      const mention = {
+        phrase: match[0].trim(),
+        time: `${pad(h)}:${pad(m)}`
+      };
+      if (isVague) mention.exact = false;
+      mentions.push(mention);
+    }
   }
   return mentions;
 }
 
 export function extractWakeMention(text = '') { return extractWakeMentions(text)[0] || null; }
 
-export function confirmedWakeTime(profile, day, now) {
-  const at = profile.wakeRecords?.[day]?.at;
+export function confirmedWakeTime(profile, day, now = Date.now()) {
+  const record = profile.wakeRecords?.[day];
+  const at = record?.at;
   if (!Number.isSafeInteger(at) || at <= 0 || at > now) return '';
-  const local = parts(at, profile.settings.timezone);
+  const tz = record?.timezone || profile.settings?.timezone || 'Asia/Shanghai';
+  const local = parts(at, tz);
   return local.day === day ? hhmm(local.minute) : '';
 }
 
 export function hasUnconfirmedWakeTime(text, confirmedTime) {
-  return extractWakeMentions(text).some(mention => mention.time !== confirmedTime);
+  return extractWakeMentions(text)
+    .filter(mention => mention.exact !== false)
+    .some(mention => mention.time !== confirmedTime);
 }
 export function dailyTimelineFacts(profile, scenes = [], day = null, now = Date.now(), docs = []) {
-  const tz = profile.settings.timezone, targetDay = day || parts(now, tz).day;
+  const tz = profile.settings.timezone;
+  const nowParts = parts(now, tz);
+  const targetDay = day || nowParts.day;
   const nodes = getNodes(profile, targetDay);
   const morningSleep = nodes[0]?.kind === 'sleep' ? nodes[0] : null;
   const nightSleep = nodes[nodes.length - 1]?.kind === 'sleep' ? nodes[nodes.length - 1] : null;
@@ -269,12 +325,16 @@ export function dailyTimelineFacts(profile, scenes = [], day = null, now = Date.
   const todayDream = docs.find(d => d.characterId === profile.characterId && d.day === targetDay && d.kind === 'dream') || null;
   const wakeTime = confirmedWakeTime(profile, targetDay, now);
   const wakePhrase = wakeTime ? `${wakeTime}起床` : '';
-  const wakeSource = wakeTime ? 'manual' : firstAwakeTime ? 'scene' : 'schedule';
-  const wakeSummary = [
-    `计划 ${plannedWakeTime} 结束休息`,
-    firstAwakeTime && `首个清醒片段 ${firstAwakeTime}`,
-    wakeTime ? `已确认 ${wakeTime} 起床` : '实际起床时间未确认'
-  ].filter(Boolean).join('；');
+  const currentPhase = sleepPhase(profile, now);
+  const isMorningSleeping = !wakeTime && nowParts.day === targetDay && currentPhase !== 'awake' && nowParts.minute < plannedWakeMinute + 60;
+  const wakeSource = wakeTime ? 'manual' : isMorningSleeping ? 'sleeping' : firstAwakeTime ? 'scene' : 'schedule';
+  const wakeSummary = isMorningSleeping
+    ? `计划 ${plannedWakeTime} 结束休息；尚未起床，当前处于睡眠阶段`
+    : [
+        `计划 ${plannedWakeTime} 结束休息`,
+        firstAwakeTime && `首个清醒片段 ${firstAwakeTime}`,
+        wakeTime ? `已确认 ${wakeTime} 起床` : '实际起床时间未确认'
+      ].filter(Boolean).join('；');
   const timelineItems = dayScenes.slice(-6).map(r => ({ time: hhmm(parts(r.generatedAt, tz).minute), until: hhmm(parts(r.experiencedUntil, tz).minute), summary: r.summary, location: r.location, phase: r.phase }));
   return { day: targetDay, plannedSleepStart, plannedWakeTime, wakeTime, wakePhrase, wakeSource, wakeSummary, firstAwakeTime, timelineItems, todayDiaryTitle: todayDiary?.title || '', todayDiarySummary: todayDiary?.summary || '', todayDreamTitle: todayDream?.title || '', todayDreamSummary: todayDream?.summary || '' };
 }

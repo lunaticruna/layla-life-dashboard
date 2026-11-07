@@ -88,7 +88,26 @@ export function extractScheduleAndTimelineFacts(profile = {}, documents = [], { 
   }
   for (const day of Object.keys(profile.wakeRecords || {})) {
     const facts = dailyTimelineFacts(profile, scenes, day, now, documents);
-    if (facts.wakeTime) dailyFacts[day] = facts;
+    if (facts.wakeTime) {
+      if (dailyFacts[day]) {
+        dailyFacts[day] = {
+          ...facts,
+          ...dailyFacts[day],
+          wakeTime: facts.wakeTime,
+          wakePhrase: facts.wakePhrase || dailyFacts[day].wakePhrase || '',
+          wakeSource: facts.wakeSource || dailyFacts[day].wakeSource || '',
+          wakeSummary: facts.wakeSummary || dailyFacts[day].wakeSummary || '',
+          firstAwakeTime: dailyFacts[day].firstAwakeTime || facts.firstAwakeTime || '',
+          plannedWakeTime: dailyFacts[day].plannedWakeTime || facts.plannedWakeTime || '',
+          plannedSleepStart: dailyFacts[day].plannedSleepStart || facts.plannedSleepStart || '',
+          timelineItems: (dailyFacts[day].timelineItems && dailyFacts[day].timelineItems.length)
+            ? dailyFacts[day].timelineItems
+            : (facts.timelineItems || [])
+        };
+      } else {
+        dailyFacts[day] = facts;
+      }
+    }
   }
 
   return {

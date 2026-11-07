@@ -351,9 +351,6 @@ export async function generateDocument(client, store, character, kind, opts = {}
       { role: 'user', content: JSON.stringify(context) }
     ], opts);
     const content = validateDocument(parseJSON(text));
-    if (kind === 'diary' && hasUnconfirmedWakeTime([content.title, content.body, content.summary].join('\n'), wakeTime)) {
-      throw new Error('日记里的起床时间与已确认记录不符。可重新生成，或先在日程流转中记录今日起床时间。');
-    }
     const keepMemory = existing?.memoryId && Number.isSafeInteger(existing.memoryId) && existing.memoryId > 0;
     const document = {
       id, characterId: character.id, sessionId: existing?.sessionId || native.sessionId, kind, day, ...content,
@@ -389,18 +386,44 @@ export async function runBackground(client, store, opts = {}) {
   const notices = [];
 
   const planAheadHour = profile.settings.planAheadHour ?? 22;
+  const tomorrowDay = nextDay(local.day);
   if ((profile.settings.autoPlan || opts.autoPlan) && local.minute >= planAheadHour * 60) {
     try {
-      await generatePlan(client, store, character, { ...clock, day: nextDay(local.day), preGenerate: true, generateScene: false });
+      const planRes = await generatePlan(client, store, character, { ...clock, day: tomorrowDay, preGenerate: true, generateScene: false });
+      if (!planRes && !profile.plans?.[tomorrowDay]) {
+        notices.push('次日日程暂未生成：生成失败或重试冷却中');
+      }
     } catch (err) {
       notices.push(`次日日程暂未生成：${String(err.message || err).slice(0, 300)}`);
     }
   }
 
-  if (local.minute >= profile.settings.diaryHour * 60) document = await generateDocument(client, store, character, 'diary', { ...clock, generateScene: false });
-  else if (profile.state.lastSleepEnd && profile.state.recentSleepHours >= 3 && now - profile.state.lastSleepEnd < 6 * 3600000) document = await generateDocument(client, store, character, 'dream', { ...clock, generateScene: false });
-  if (document && profile.settings.autoWrite && ['pending', 'stale'].includes(document.syncStatus)) {
-    document = await writeMemory(client, store, document.id);
+  const docCooldown = 20 * 60 * 1000;
+  const canAttemptDoc = (now - (profile.state.documentAttemptAt || 0)) > docCooldown;
+  if (canAttemptDoc) {
+    try {
+      if (local.minute >= profile.settings.diaryHour * 60) {
+        document = await generateDocument(client, store, character, 'diary', { ...clock, generateScene: false });
+      } else if (profile.state.lastSleepEnd && profile.state.recentSleepHours >= 3 && now - profile.state.lastSleepEnd < 6 * 3600000) {
+        document = await generateDocument(client, store, character, 'dream', { ...clock, generateScene: false });
+      }
+      if (document && profile.settings.autoWrite && ['pending', 'stale'].includes(document.syncStatus)) {
+        document = await writeMemory(client, store, document.id);
+      }
+    } catch (err) {
+      profile.state.documentAttemptAt = now;
+      await store.putProfile(profile);
+      const errKind = (local.minute >= profile.settings.diaryHour * 60) ? 'diary' : 'dream';
+      await store.addRun({
+        id: uid('run'),
+        characterId: character.id,
+        at: now,
+        kind: errKind,
+        status: 'error',
+        message: `文稿生成或写入异常：${String(err.message || err).slice(0, 300)}`
+      });
+      notices.push(`文稿生成或写入异常：${String(err.message || err).slice(0, 300)}`);
+    }
   }
   if (scene?.status === 'error') notices.push(`场景未更新：${scene.message}`);
   if (document?.graphError) notices.push(`文本保留，图谱未完成：${document.graphError}`);

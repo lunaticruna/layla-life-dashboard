@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CARD_SYNC_END, CARD_SYNC_START, applyCardSyncBlock, archiveSessionId, buildCardSyncBlock, createProfile, dailyTimelineFacts, extractWakeMention, stripCardSyncBlock, validatePlan, templatePlan, epoch, parts, contextAt, advanceProfile, sleepPhase, makeSnapshot, parseJSON, validateDocument, memoryPayload, documentId } from '../src/core.js';
+import { CARD_SYNC_END, CARD_SYNC_START, applyCardSyncBlock, archiveSessionId, buildCardSyncBlock, confirmedWakeTime, createProfile, dailyTimelineFacts, extractWakeMention, hasUnconfirmedWakeTime, stripCardSyncBlock, validatePlan, templatePlan, epoch, parts, contextAt, advanceProfile, sleepPhase, makeSnapshot, parseJSON, validateDocument, memoryPayload, documentId, upgradeProfile } from '../src/core.js';
 const character = { id: 'role-a', data: { data: { name: '测试角色' } } };
 const day = '2026-11-01';
 
@@ -93,4 +93,106 @@ test('wake extraction, daily timeline facts and reversible card sync block stay 
   assert.equal(applyCardSyncBlock(merged, block), merged);
   assert.equal(stripCardSyncBlock(merged), original);
   assert.equal(applyCardSyncBlock(merged, ''), original);
+});
+
+test('R1.1 / R2: Wake regex boundary filtering (degree adverbs, nap contexts, quotes, 零X分, vague mentions)', () => {
+  // Degree adverbs must return null (not parsed as 01:00)
+  for (const phrase of ['今天晚一点起床', '慢一点起身', '差一点醒来', '快一点起床', '早一点起床', '好一点起床', '多一点起床', '少一点起床', '晚了一点起床']) {
+    assert.equal(extractWakeMention(phrase), null, `expected null for adverb: ${phrase}`);
+  }
+
+  // Midday & nap contexts must return null (not parsed as morning wake-ups)
+  for (const phrase of ['午睡到两点半醒来', '小憩到14:30睡醒', '今天下午三点醒来', '中午12点睡醒', '傍晚六点醒来', '打盹到两点半醒来']) {
+    assert.equal(extractWakeMention(phrase), null, `expected null for nap/midday: ${phrase}`);
+  }
+
+  // Plan comparisons and quotes: only actual wake-up extracted, planned/quoted wake skipped
+  const planComparison = extractWakeMention('平时计划8:00起床，今天8:44醒来');
+  assert.deepEqual(planComparison, { phrase: '8:44醒来', time: '08:44' });
+
+  assert.equal(extractWakeMention('你说早上8点起床'), null);
+  assert.equal(extractWakeMention('听你说早上8点起床'), null);
+  assert.equal(extractWakeMention('聊天中提到早上8点起床'), null);
+
+  // 零X分 support
+  assert.deepEqual(extractWakeMention('八点零五分起床'), { phrase: '八点零五分起床', time: '08:05' });
+  assert.deepEqual(extractWakeMention('早上八点零五起床'), { phrase: '早上八点零五起床', time: '08:05' });
+  assert.deepEqual(extractWakeMention('7点零9分醒来'), { phrase: '7点零9分醒来', time: '07:09' });
+
+  // Vague mentions: exact: false, time preserved
+  const vague = extractWakeMention('十点多才从被子里爬出来');
+  assert.equal(vague.time, '10:00');
+  assert.equal(vague.exact, false);
+
+  // hasUnconfirmedWakeTime behavior
+  assert.equal(hasUnconfirmedWakeTime('十点多才从被子里爬出来', ''), false);
+  assert.equal(hasUnconfirmedWakeTime('十点多才从被子里爬出来', '08:44'), false);
+  assert.equal(hasUnconfirmedWakeTime('平时计划8:00起床，今天8:44醒来', '08:44'), false);
+  assert.equal(hasUnconfirmedWakeTime('平时计划8:00起床，今天8:44醒来', '08:00'), true);
+  assert.equal(hasUnconfirmedWakeTime('早上8:44起床', '08:44'), false);
+  assert.equal(hasUnconfirmedWakeTime('早上8:44起床', '08:00'), true);
+});
+
+test('R1.2 / R2: Sleep phase and resting state linkage with confirmed wake records and sleeping wakeSource', () => {
+  const p = createProfile(character, epoch(day, 0));
+  p.settings.sleepStart = '23:30';
+  p.settings.sleepEnd = '08:00';
+  const wakeTs = epoch(day, 420); // 07:00
+  p.wakeRecords[day] = { at: wakeTs, timezone: 'Asia/Shanghai' };
+
+  // Before confirmed wake time (06:30): character is in light/deep sleep
+  const beforeWake = epoch(day, 390);
+  assert.equal(sleepPhase(p, beforeWake), 'deep_sleep');
+
+  // At confirmed wake time (07:00): character transitions to awake
+  assert.equal(sleepPhase(p, wakeTs), 'awake');
+
+  // After confirmed wake time but before planned sleepEnd (07:30): character remains awake!
+  const afterWake = epoch(day, 450);
+  assert.equal(sleepPhase(p, afterWake), 'awake');
+
+  // AdvanceProfile: resting is false once confirmed wake time is reached
+  const advanced = advanceProfile(p, afterWake);
+  assert.ok(advanced.state.updatedAt === afterWake);
+
+  // Night sleep (23:45): not affected by morning wakeRecord
+  const nightTs = epoch(day, 1425);
+  assert.notEqual(sleepPhase(p, nightTs), 'awake');
+
+  // dailyTimelineFacts with wakeSource = 'sleeping' during morning sleep when unconfirmed
+  const pUnconfirmed = createProfile(character, epoch(day, 0));
+  pUnconfirmed.settings.sleepStart = '23:30';
+  pUnconfirmed.settings.sleepEnd = '08:00';
+  const morningSleepNow = epoch(day, 420); // 07:00, unconfirmed
+  const sleepingFacts = dailyTimelineFacts(pUnconfirmed, [], day, morningSleepNow);
+  assert.equal(sleepingFacts.wakeSource, 'sleeping');
+  assert.match(sleepingFacts.wakeSummary, /尚未起床/);
+  assert.equal(sleepingFacts.wakeTime, '');
+});
+
+test('R1.3 / R2: Timezone consistency, default now, and wakeRecords object normalization in upgradeProfile', () => {
+  // Default now in confirmedWakeTime
+  const p = createProfile(character, epoch(day, 0));
+  const morningAt = epoch(day, 480, 'Asia/Shanghai'); // 08:00
+  p.wakeRecords[day] = { at: morningAt, timezone: 'Asia/Shanghai' };
+  // Calling confirmedWakeTime with 2 arguments (now defaults to Date.now())
+  assert.equal(confirmedWakeTime(p, day), '08:00');
+
+  // Timezone switch: user changes settings timezone to Asia/Tokyo
+  p.settings.timezone = 'Asia/Tokyo';
+  // Must use record.timezone ('Asia/Shanghai') and still return '08:00' for day
+  assert.equal(confirmedWakeTime(p, day), '08:00');
+
+  // Normalization in upgradeProfile: null, array, corrupt wakeRecords fallback to {}
+  const corruptInput1 = { characterId: 'c1', name: '测试', wakeRecords: null };
+  const up1 = upgradeProfile(corruptInput1);
+  assert.deepEqual(up1.wakeRecords, {});
+
+  const corruptInput2 = { characterId: 'c2', name: '测试', wakeRecords: ['invalid', 'array'] };
+  const up2 = upgradeProfile(corruptInput2);
+  assert.deepEqual(up2.wakeRecords, {});
+
+  const validInput = { characterId: 'c3', name: '测试', wakeRecords: { [day]: { at: morningAt, timezone: 'Asia/Shanghai' } } };
+  const up3 = upgradeProfile(validInput);
+  assert.equal(up3.wakeRecords[day].at, morningAt);
 });

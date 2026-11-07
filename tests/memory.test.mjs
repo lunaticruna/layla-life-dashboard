@@ -185,3 +185,35 @@ test('diary graph normalizes 08:44 vs 8:44 time spans and projects 1-hop dated f
   assert.ok(legacyGraph.some(x => x.subject === c.recordNode && x.relationship === '记录中作息'));
   assert.ok(!legacyGraph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01作息'));
 });
+
+test('R1.4 / R2: Reflection documents pass confirmedWakeTime and project 1-hop dated facts', () => {
+  const d = {
+    id: documentId(role.id, 'reflection', '2026-11-01'),
+    characterId: role.id,
+    sessionId: 'original-session',
+    kind: 'reflection',
+    day: '2026-11-01',
+    title: '作息反思',
+    body: '今天8:44起床，反思了近期的生活节奏与晨起效率。',
+    summary: '8:44起床，反思了晨起效率。',
+    createdAt: now,
+    syncStatus: 'pending',
+    timelineFacts: { wakeTime: '08:44', wakeSource: 'manual' }
+  };
+  const c = graphContext(d, memoryPayload(d), '瑠璃子');
+  assert.equal(c.confirmedWakeTime, '08:44');
+
+  const extracted = JSON.stringify([
+    { subject: c.recordNode, relationship: '记录中作息', object: '8:44 起床' },
+    { subject: c.recordNode, relationship: '记录中感受', object: '反思了晨起效率' }
+  ]);
+  const graph = readTriples(buildGraph(extracted, c, d));
+  // Must project 1-hop dated facts onto character node
+  assert.ok(graph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01作息' && x.object === '8:44起床'));
+  assert.ok(graph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01感受' && x.object === '反思了晨起效率'));
+
+  // Without confirmed manual wakeSource, confirmedWakeTime is null
+  const unconfirmed = { ...d, timelineFacts: { wakeTime: '08:44', wakeSource: 'schedule' } };
+  const cUnconf = graphContext(unconfirmed, memoryPayload(unconfirmed), '瑠璃子');
+  assert.equal(cUnconf.confirmedWakeTime, null);
+});

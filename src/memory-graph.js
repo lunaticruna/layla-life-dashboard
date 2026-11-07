@@ -13,7 +13,7 @@ const DETAIL_KEYS = ['时间', '作息', '地点', '物件', '动作', '声音',
 export function graphContext(d, native, name) {
   if (!(d.kind in DOC_KINDS)) throw new Error('未知的记录类型，未修改原生记忆');
   if (String(native.rawText || '').length > 20000 || String(native.summary || '').length > 3000) throw new Error('原生记录过长，请先检查原文，未截断或覆盖记忆');
-  const wakeTime = d.kind === 'diary' && d.timelineFacts?.wakeSource === 'manual' ? d.timelineFacts.wakeTime : '';
+  const wakeTime = ['diary', 'reflection'].includes(d.kind) && d.timelineFacts?.wakeSource === 'manual' ? d.timelineFacts.wakeTime : '';
   return { characterName: name, recordNode: graphScope(d), date: d.day, kind: DOC_KINDS[d.kind], confirmedWakeTime: wakeTime || null,
     allowedRelationships: DETAIL_KEYS.map(k => graphPrefix(d) + k),
     rawText: native.rawText, summary: native.summary || '' };

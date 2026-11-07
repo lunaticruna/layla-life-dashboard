@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createStore } from '../src/store.js';
 import { createProfile, documentId, epoch, memoryPayload, templatePlan } from '../src/core.js';
-import { readTriples } from '../src/memory-graph.js';
+import { buildGraph, graphContext, readTriples } from '../src/memory-graph.js';
 import { generateCurrentScene, generateDocument, generatePlan, recordWakeTime, runBackground, saveManualPlan, syncCharacterCard, writeMemory } from '../src/workflow.js';
 
 const character = { id: 'a', data: { spec: 'chara_card_v2', spec_version: '2.0', data: { name: '甲', description: '角色', personality: '', scenario: '', post_history_instructions: '' } } };
@@ -139,22 +139,38 @@ test('scheme 1 card sync and scheme 2 LTM graph align on 08:44 wake-up and clean
   f.db.close();
 });
 
-test('unconfirmed and conflicting wake claims cannot replace a diary or enter native memory', async t => {
+test('unconfirmed and conflicting wake claims do not discard diary and cannot enter 1-hop attributes or memory wake tags', async t => {
   const f = fixture(), day = '2026-11-01';
   t.after(() => f.db.close());
   await f.store.init();
   await f.store.putProfile(createProfile(f.role, now));
   f.setDoc({ title: '早晨', body: '十点多才从被子里爬出来。', summary: '整理了桌上的书。' });
   const opts = { now, generateScene: false };
-  await assert.rejects(generateDocument(f.client, f.store, f.role, 'diary', opts), /起床时间与已确认记录不符/);
-  assert.equal(await f.store.getDoc(document().id), null);
+  // Tolerates unconfirmed wake phrasing without throwing hard error
+  const unconfirmedDoc = await generateDocument(f.client, f.store, f.role, 'diary', opts);
+  assert.ok(unconfirmedDoc);
+  assert.equal(unconfirmedDoc.timelineFacts.wakeTime, '');
+  assert.notEqual(unconfirmedDoc.timelineFacts.wakeSource, 'manual');
+  // Unconfirmed wake does not enter memoryPayload wakeTag
+  const p1 = memoryPayload(unconfirmedDoc);
+  assert.doesNotMatch(p1.summary, /已确认.*起床/);
+
   await assert.rejects(recordWakeTime(f.client, f.store, f.role, day, '23:00', opts), /已经过去/);
   await recordWakeTime(f.client, f.store, f.role, day, '08:44', opts);
   f.setDoc({ title: '记录', body: '早上8:44起床。后来读了几页书。', summary: '早上8:44起床，之后看了一会儿书。' });
-  const diary = await generateDocument(f.client, f.store, f.role, 'diary', opts);
+  const diary = await generateDocument(f.client, f.store, f.role, 'diary', { ...opts, force: true });
+  assert.equal(diary.timelineFacts.wakeTime, '08:44');
+  assert.equal(diary.timelineFacts.wakeSource, 'manual');
+
+  // Conflicting unconfirmed wake claim does not crash generateDocument, but is blocked from 1-hop attributes
   f.setDoc({ title: '又一篇', body: '8:44起床。10:00起床。', summary: '看了一会儿书。' });
-  await assert.rejects(generateDocument(f.client, f.store, f.role, 'diary', { ...opts, force: true }), /起床时间与已确认记录不符/);
-  assert.equal((await f.store.getDoc(diary.id)).body, diary.body);
+  const regenerated = await generateDocument(f.client, f.store, f.role, 'diary', { ...opts, force: true });
+  assert.ok(regenerated);
+  const gCtx = graphContext(regenerated, { rawText: regenerated.body, summary: regenerated.summary }, f.role.data.data.name);
+  const graph = JSON.parse(buildGraph(JSON.stringify([{ subject: gCtx.recordNode, relationship: '记录中作息', object: '10:00起床' }]), gCtx, regenerated));
+  const directAttrs = graph.filter(tr => tr.subject === f.role.data.data.name);
+  assert.ok(!directAttrs.some(tr => tr.object.includes('10:00')));
+
   await recordWakeTime(f.client, f.store, f.role, day, '', opts);
   assert.match(f.role.data.data.post_history_instructions, /实际起床时间未确认/);
   assert.doesNotMatch(f.role.data.data.post_history_instructions, /8:44起床/);
@@ -181,5 +197,66 @@ test('forced same-day diary regeneration updates existing native memory in place
   assert.equal(f.creates, 1);
   assert.equal(f.memories.length, 1);
   assert.match(f.memories[0].summary, /整理了书架/);
+  f.db.close();
+});
+
+test('R1.1 / R2: runBackground wraps document generation in try/catch, sets cooldown, and reports notice on failure', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.diaryHour = 21; // earlier than now (22:00)
+  await f.store.putProfile(p);
+
+  // Force document generation to fail by throwing in client completion when generating diary
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:DIARY')) {
+      throw new Error('LLM connection reset');
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+  assert.match(res.message, /文稿生成或写入异常/);
+
+  // Profile cooldown state was set
+  const savedProfile = await f.store.getProfile(f.role.id);
+  assert.equal(savedProfile.state.documentAttemptAt, now);
+
+  // Error run was recorded in store
+  const rows = f.db.prepare('SELECT data FROM ll_runs WHERE character_id = ?').all(f.role.id);
+  const runs = rows.map(r => JSON.parse(r.data));
+  const errorRun = runs.find(r => r.status === 'error' && r.kind === 'diary');
+  assert.ok(errorRun);
+  assert.match(errorRun.message, /LLM connection reset/);
+
+  f.db.close();
+});
+
+test('R1.1 / R2: runBackground tomorrow plan pregeneration failure records notice', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.autoPlan = true;
+  p.settings.planAheadHour = 20; // 20:00, now is 22:00
+  p.settings.diaryHour = 23; // later than now, so no diary attempt
+  await f.store.putProfile(p);
+
+  // Force plan generation to fail
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:PLAN') || req.messages[0].content.includes('TASK:SCHEDULE')) {
+      throw new Error('Plan generation timeout');
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+  assert.match(res.message, /次日日程暂未生成/);
+
   f.db.close();
 });

@@ -194,3 +194,37 @@ test('Migration R2: profiles without plans or with empty plans migrate cleanly w
 
   db.close();
 });
+
+test('R1.4 / R2: Legacy profile writes back stripped profile to prevent repeated insertLegacyPlan on subsequent reads', async () => {
+  const { db, client, store } = createMockStore();
+  await store.init();
+
+  const characterId = 'test-strip-plans';
+  await client.db.executeSql(`INSERT INTO ll_profiles (character_id, data) VALUES (?, ?)`, [
+    characterId,
+    JSON.stringify({ schema: 2, characterId, name: '测试', settings: {}, plans: { '2026-11-01': { nodes: [] } } })
+  ]);
+
+  let legacyInserts = 0;
+  const origExec = client.db.executeSql;
+  client.db.executeSql = async (q, args) => {
+    if (q.includes('insertLegacyPlan') || q.includes('INSERT OR IGNORE INTO ll_plans')) legacyInserts++;
+    return origExec(q, args);
+  };
+
+  // First read triggers migration and persists stripped profile
+  await store.getProfile(characterId);
+  assert.equal(legacyInserts, 1);
+
+  // Subsequent read must NOT trigger insertLegacyPlan because plans was stripped in ll_profiles
+  legacyInserts = 0;
+  await store.getProfile(characterId);
+  assert.equal(legacyInserts, 0);
+
+  // Check ll_profiles table in DB directly
+  const row = db.prepare('SELECT data FROM ll_profiles WHERE character_id = ?').get(characterId);
+  const parsed = JSON.parse(row.data);
+  assert.equal(parsed.plans, undefined);
+
+  db.close();
+});

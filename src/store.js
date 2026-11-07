@@ -109,8 +109,12 @@ export function createStore(client) {
   }
 
   async function populateProfilePlans(profile) {
-    for (const [day, plan] of Object.entries(profile.plans)) {
-      await persistPlan(profile.characterId, day, { ...plan, generatedAt: plan?.generatedAt || profile.createdAt }, true);
+    const legacyEntries = Object.entries(profile.plans || {});
+    if (legacyEntries.length) {
+      for (const [day, plan] of legacyEntries) {
+        await persistPlan(profile.characterId, day, { ...plan, generatedAt: plan?.generatedAt || profile.createdAt }, true);
+      }
+      await store.putProfile(profile);
     }
     const saved = await store.plans(profile.characterId, { limit: 365 });
     profile.plans = Object.fromEntries(saved.map(plan => [plan.day, plan]));
