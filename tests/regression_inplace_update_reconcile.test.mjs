@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import { createStore } from '../src/store.js';
 import { createProfile, epoch } from '../src/core.js';
-import { formatMemoryToast, readTriples } from '../src/memory-graph.js';
+import { buildGraph, formatMemoryToast, memoryBasis, readTriples } from '../src/memory-graph.js';
 import { enrichMemory, generateDocument, recordWakeTime, writeMemory } from '../src/workflow.js';
 import { exportCharacterBackup } from '../src/export.js';
 
@@ -738,4 +738,240 @@ test('Auditor BUG-2 & UI Toast Regression: Failed prepareGraphDraft + leftover o
   const toastWrittenGraphUncertain = formatMemoryToast(reconciled, false);
   assert.equal(toastWrittenGraphUncertain.error, true);
   assert.match(toastWrittenGraphUncertain.text, /文本已保存，图谱未完成/);
+});
+
+async function generateRetryDiaryB(f) {
+  f.setDoc({
+    title: '更新后的红茶日记',
+    body: '今天早上08:44起床，傍晚煮了红茶并整理了书架。',
+    summary: '早上08:44起床，傍晚煮红茶并整理书架。'
+  });
+  return generateDocument(f.client, f.store, f.role, 'diary', { now: eveningTs, force: true, generateScene: false });
+}
+
+test('UAT P1: stale retry preserves native edits made after read-only reconciliation, including after restart', async t => {
+  for (const edit of ['text', 'graph']) {
+    await t.test(edit, async t => {
+      const f = createFixture(t);
+      await setupWrittenDiaryA(f);
+      const diaryB = await generateRetryDiaryB(f);
+      f.setUpdateBehavior('fail-before-commit');
+      await assert.rejects(writeMemory(f.client, f.store, diaryB.id), /落库前/);
+      const stale = await writeMemory(f.client, f.store, diaryB.id, { reconcileOnly: true });
+      assert.equal(stale.syncStatus, 'stale');
+      const savedIntent = structuredClone(stale.pendingWrite);
+
+      if (edit === 'text') f.memories[0].summary = '用户在原生界面补充的第三版 C';
+      else f.memories[0].knowledgeGraphJSON = JSON.stringify([{ subject: '澪', relationship: '手动核对', object: '第三版图谱 C' }]);
+      const nativeC = structuredClone(f.memories[0]);
+      const restartedStore = createStore(f.client);
+      await restartedStore.init();
+      f.setUpdateBehavior('ok'); f.resetCounters();
+
+      await assert.rejects(writeMemory(f.client, restartedStore, diaryB.id), /基准不一致/);
+      assert.equal(f.totalWriteCalls, 0);
+      assert.equal(f.counters.llmGraphCalls, 0);
+      assert.deepEqual(f.memories[0], nativeC);
+      assert.equal(f.memories.length, 1);
+      const blocked = await restartedStore.getDoc(diaryB.id);
+      assert.equal(blocked.syncStatus, 'uncertain');
+      assert.deepEqual(blocked.pendingWrite, savedIntent, 'Keep the original baseline instead of adopting C');
+      assert.notEqual(blocked.graphStatus, 'ready');
+
+      const reconciled = await writeMemory(f.client, restartedStore, diaryB.id, { reconcileOnly: true });
+      assert.equal(reconciled.syncStatus, 'uncertain');
+      assert.equal(f.totalWriteCalls, 0);
+      assert.deepEqual(f.memories[0], nativeC);
+    });
+  }
+});
+
+test('UAT P1: unchanged native baseline still permits an in-place stale retry after restart', async t => {
+  const f = createFixture(t);
+  await setupWrittenDiaryA(f);
+  const diaryB = await generateRetryDiaryB(f);
+  f.setUpdateBehavior('fail-before-commit');
+  await assert.rejects(writeMemory(f.client, f.store, diaryB.id));
+  await writeMemory(f.client, f.store, diaryB.id, { reconcileOnly: true });
+  const restartedStore = createStore(f.client);
+  await restartedStore.init();
+  f.setUpdateBehavior('ok'); f.resetCounters();
+  const retried = await writeMemory(f.client, restartedStore, diaryB.id);
+  assert.equal(retried.syncStatus, 'written');
+  assert.equal(retried.graphStatus, 'ready');
+  assert.equal(retried.pendingWrite, null);
+  assert.equal(retried.memoryId, 100);
+  assert.equal(f.memories.length, 1);
+  assert.equal(f.counters.updateCalls, 1);
+  assert.equal(f.counters.llmGraphCalls, 0);
+});
+
+test('UAT P1: native text and graph edits during graph generation survive the final pre-write read', async t => {
+  for (const edit of ['text', 'graph']) {
+    await t.test(edit, async t => {
+      const f = createFixture(t);
+      await setupWrittenDiaryA(f);
+      const diaryB = await generateRetryDiaryB(f);
+      const complete = f.client.chat.completions.create;
+      let nativeC;
+      f.client.chat.completions.create = async request => {
+        if (String(request.messages[0].content).includes('TASK:MEMORY_GRAPH')) {
+          if (edit === 'text') f.memories[0].summary = '模型等待期间用户手动修订 C';
+          else f.memories[0].knowledgeGraphJSON = JSON.stringify([{ subject: '澪', relationship: '手动核对', object: '等待期间修订的图谱 C' }]);
+          nativeC = structuredClone(f.memories[0]);
+        }
+        return complete(request);
+      };
+      f.resetCounters();
+      await assert.rejects(writeMemory(f.client, f.store, diaryB.id), /处理期间原生记忆或图谱已变化/);
+      assert.equal(f.totalWriteCalls, 0);
+      assert.deepEqual(f.memories[0], nativeC);
+      const blocked = await f.store.getDoc(diaryB.id);
+      assert.equal(blocked.syncStatus, 'uncertain');
+      assert.ok(blocked.pendingWrite?.previousBasis);
+      assert.notEqual(blocked.graphStatus, 'ready');
+      const reconciled = await writeMemory(f.client, f.store, diaryB.id, { reconcileOnly: true });
+      assert.equal(reconciled.syncStatus, 'uncertain');
+      assert.equal(f.totalWriteCalls, 0);
+    });
+  }
+});
+
+test('UAT P2: a corrected native graph is accepted against its current draft despite old errors', async t => {
+  for (const hadError of [false, true]) {
+    await t.test(hadError ? 'after a failed repair attempt' : 'after read-only reconciliation', async t => {
+      const f = createFixture(t);
+      await setupWrittenDiaryA(f);
+      const diaryB = await generateRetryDiaryB(f);
+      f.setUpdateBehavior('keep-old-graph-lost-receipt');
+      await assert.rejects(writeMemory(f.client, f.store, diaryB.id), /回执丢失/);
+      let d = await writeMemory(f.client, f.store, diaryB.id, { reconcileOnly: true });
+      assert.equal(d.graphStatus, 'uncertain');
+      if (hadError) {
+        d = await enrichMemory(f.client, f.store, diaryB.id);
+        assert.equal(d.graphStatus, 'error');
+      }
+      const fixedGraph = readTriples(d.graphDraftJSON).reverse();
+      f.memories[0].knowledgeGraphJSON = JSON.stringify([...fixedGraph, fixedGraph[0]]);
+      const nativeB = structuredClone(f.memories[0]);
+      const restartedStore = createStore(f.client);
+      await restartedStore.init();
+      f.resetCounters();
+      const accepted = await enrichMemory(f.client, restartedStore, diaryB.id);
+      assert.equal(accepted.syncStatus, 'written');
+      assert.equal(accepted.graphStatus, 'ready');
+      assert.equal(accepted.graphError, '');
+      assert.equal(accepted.graphBasis, memoryBasis(nativeB));
+      assert.equal(accepted.graphVerifiedJSON, nativeB.knowledgeGraphJSON);
+      assert.equal(accepted.retrievalStatus, 'unverified');
+      assert.equal(f.totalWriteCalls, 0);
+      assert.equal(f.counters.llmGraphCalls, 0);
+      assert.deepEqual(f.memories[0], nativeB);
+      assert.equal((await restartedStore.getDoc(diaryB.id)).graphStatus, 'ready');
+    });
+  }
+});
+
+test('UAT P2: graph equality from an obsolete text basis cannot clear an old-graph warning', async t => {
+  const f = createFixture(t);
+  await setupWrittenDiaryA(f);
+  const diaryB = await generateRetryDiaryB(f);
+  f.setUpdateBehavior('keep-old-graph-lost-receipt');
+  await assert.rejects(writeMemory(f.client, f.store, diaryB.id));
+  const d = await writeMemory(f.client, f.store, diaryB.id, { reconcileOnly: true });
+  f.memories[0].knowledgeGraphJSON = d.graphDraftJSON;
+  f.memories[0].summary += '（原生端另有修订）';
+  const changedNative = structuredClone(f.memories[0]);
+  f.resetCounters();
+  const result = await enrichMemory(f.client, f.store, diaryB.id);
+  assert.equal(result.graphStatus, 'error');
+  assert.equal(result.graphVerifiedJSON, null);
+  assert.equal(f.totalWriteCalls, 0);
+  assert.equal(f.counters.llmGraphCalls, 0);
+  assert.deepEqual(f.memories[0], changedNative);
+});
+
+test('UAT P2: a graph appearing during repair is accepted only if it matches the current draft', async t => {
+  for (const arrives of ['old graph', 'current draft']) {
+    await t.test(arrives, async t => {
+      const f = createFixture(t);
+      const { nativeASnapshot } = await setupWrittenDiaryA(f);
+      const diaryB = await generateRetryDiaryB(f);
+      const complete = f.client.chat.completions.create;
+      f.client.chat.completions.create = async request => {
+        if (String(request.messages[0].content).includes('TASK:MEMORY_GRAPH')) throw new Error('图谱模型超时');
+        return complete(request);
+      };
+      f.setUpdateBehavior('keep-old-graph-lost-receipt');
+      await assert.rejects(writeMemory(f.client, f.store, diaryB.id), /回执丢失/);
+      const d = await writeMemory(f.client, f.store, diaryB.id, { reconcileOnly: true });
+      assert.equal(d.syncStatus, 'written');
+      assert.equal(d.graphStatus, 'uncertain');
+      assert.equal(d.graphDraftJSON, null);
+      f.memories[0].knowledgeGraphJSON = null;
+      let arrivingGraph;
+      f.client.chat.completions.create = async request => {
+        const result = await complete(request);
+        if (String(request.messages[0].content).includes('TASK:MEMORY_GRAPH')) {
+          const context = JSON.parse(request.messages[1].content);
+          arrivingGraph = arrives === 'old graph' ? nativeASnapshot.knowledgeGraphJSON : buildGraph(result.choices[0].message.content, context, d);
+          f.memories[0].knowledgeGraphJSON = arrivingGraph;
+        }
+        return result;
+      };
+      f.resetCounters();
+      const result = await enrichMemory(f.client, f.store, diaryB.id);
+      assert.equal(result.syncStatus, 'written');
+      assert.equal(f.totalWriteCalls, 0);
+      assert.equal(f.counters.llmGraphCalls, 1);
+      assert.equal(f.memories[0].knowledgeGraphJSON, arrivingGraph);
+      if (arrives === 'old graph') {
+        assert.equal(result.graphStatus, 'error');
+        assert.equal(result.graphVerifiedJSON, null);
+        assert.match(result.graphError, /原生图谱已变化/);
+        assert.equal((await enrichMemory(f.client, f.store, diaryB.id)).graphStatus, 'error');
+      } else {
+        assert.equal(result.graphStatus, 'ready');
+        assert.equal(result.graphVerifiedJSON, arrivingGraph);
+        assert.equal(result.graphError, '');
+      }
+      assert.equal(f.totalWriteCalls, 0);
+    });
+  }
+});
+
+test('UAT P2: repeated checks cannot accept a draft after native text changed during the previous check', async t => {
+  const f = createFixture(t);
+  await setupWrittenDiaryA(f);
+  const diaryB = await generateRetryDiaryB(f);
+  f.setUpdateBehavior('keep-old-graph-lost-receipt');
+  await assert.rejects(writeMemory(f.client, f.store, diaryB.id));
+  const d = await writeMemory(f.client, f.store, diaryB.id, { reconcileOnly: true });
+  f.memories[0].knowledgeGraphJSON = null;
+  const list = f.client.memories.list;
+  let reads = 0;
+  f.client.memories.list = async (...args) => {
+    if (++reads === 2) {
+      f.memories[0].summary += '（核对期间原生端修订 C）';
+      f.memories[0].knowledgeGraphJSON = d.graphDraftJSON;
+    }
+    return list(...args);
+  };
+  f.resetCounters();
+  const first = await enrichMemory(f.client, f.store, diaryB.id);
+  assert.equal(first.graphStatus, 'error');
+  assert.match(first.graphError, /原生记忆已变化/);
+  const nativeC = structuredClone(f.memories[0]);
+  assert.notEqual(first.graphDraftBasis, memoryBasis(nativeC));
+
+  const restartedStore = createStore(f.client);
+  await restartedStore.init();
+  for (const reconcileOnly of [true, false, true]) {
+    const checked = await enrichMemory(f.client, restartedStore, diaryB.id, { reconcileOnly });
+    assert.notEqual(checked.graphStatus, 'ready');
+    assert.equal(checked.graphVerifiedJSON, null);
+    assert.deepEqual(f.memories[0], nativeC);
+  }
+  assert.equal(f.totalWriteCalls, 0);
+  assert.equal(f.counters.llmGraphCalls, 0);
 });

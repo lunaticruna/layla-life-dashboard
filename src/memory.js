@@ -54,6 +54,12 @@ function matchesPendingWrite(native, pending) {
   if (hasHash && payloadDigest(nativeRaw, nativeSummary) !== pending.payloadHash) return false;
   return true;
 }
+function matchesPreviousWrite(native, pending) {
+  if (!native || !pending?.previousBasis || memoryBasis(native) !== pending.previousBasis) return false;
+  const currentGraph = native.knowledgeGraphJSON ?? null;
+  const previousGraph = pending.previousGraphJSON ?? null;
+  return currentGraph === previousGraph || sameGraph(currentGraph, previousGraph);
+}
 function clip(text, max = 42) {
   const s = String(text ?? '').replace(/\s+/g, ' ').trim();
   return s.length > max ? `${s.slice(0, max)}…` : s;
@@ -111,17 +117,20 @@ async function enrichLocked(client, store, d, opts) {
     let native = await findWrittenMemory(client, d, opts);
     if (!native) throw new Error('找不到原记忆；可能已删除或日期改变，未创建替代条目');
     const basis = memoryBasis(native), originalGraph = native.knowledgeGraphJSON;
-    const hasDraftMismatch = Boolean(d.graphDraftJSON && d.graphDraftBasis === basis && !sameGraph(native.knowledgeGraphJSON, d.graphDraftJSON));
+    const hasCurrentDraft = Boolean(d.graphDraftJSON && d.graphDraftBasis === basis);
+    const matchesCurrentDraft = hasCurrentDraft && sameGraph(native.knowledgeGraphJSON, d.graphDraftJSON);
     const isFlaggedOldGraph = ['uncertain', 'error'].includes(d.graphStatus) && !d.graphVerifiedJSON && /旧版/.test(d.graphError || '');
-    const hasGraphConflict = hasDraftMismatch || (hasGraph(native.knowledgeGraphJSON) && (isStaleNativeGraph(native.knowledgeGraphJSON, d, native) || isFlaggedOldGraph));
+    // Current readback evidence supersedes a previous failed graph check.
+    const hasGraphConflict = !matchesCurrentDraft && (Boolean(d.graphDraftJSON) || (hasGraph(native.knowledgeGraphJSON) && (isStaleNativeGraph(native.knowledgeGraphJSON, d, native) || isFlaggedOldGraph)));
     if (hasGraph(native.knowledgeGraphJSON) && !hasGraphConflict) {
       acceptGraph(d, native); await store.putDoc(d);
       await log(store, d, 'ok', `记忆 #${d.memoryId} 的原生图谱已核对；自然召回需另行验收`);
       return d;
     }
     if (hasGraph(native.knowledgeGraphJSON) && hasGraphConflict) {
+      invalidateCheck(d); d.graphVerifiedJSON = null; d.graphBasis = null;
       if (opts.reconcileOnly) {
-        d.graphStatus = 'uncertain'; d.graphVerifiedJSON = null; d.graphBasis = null;
+        d.graphStatus = 'uncertain';
         d.graphError = '原生文本已更新为新版本，但原生图谱仍为旧版本或与当前版本不一致，请核对后重试';
         await store.putDoc(d); return d;
       }
@@ -148,6 +157,7 @@ async function enrichLocked(client, store, d, opts) {
     const latest = await findWrittenMemory(client, d, opts);
     if (!latest || memoryBasis(latest) !== basis) throw new Error('处理期间原生记忆已变化，未覆盖；请重新核对后重试');
     if (hasGraph(latest.knowledgeGraphJSON)) {
+      if (!sameGraph(latest.knowledgeGraphJSON, d.graphDraftJSON)) throw new Error('处理期间原生图谱已变化，且与当前草稿不一致，未覆盖；请先在 Layla 中核对');
       acceptGraph(d, latest); await store.putDoc(d); return d;
     }
     if (latest.knowledgeGraphJSON !== originalGraph) throw new Error('处理期间原生图谱已变化，未覆盖；请重新核对');
@@ -313,7 +323,7 @@ export async function writeMemory(client, store, id, opts = {}) {
         const expRaw = pending ? pending.rawText : fallbackExpected.rawText;
         const expSum = pending ? pending.summary : fallbackExpected.summary;
         const diff = versionDiffText(existing, expRaw, expSum);
-        const matchesPrev = Boolean(pending?.previousBasis && memoryBasis(existing) === pending.previousBasis);
+        const matchesPrev = matchesPreviousWrite(existing, pending);
         d.syncStatus = matchesPrev ? 'stale' : 'uncertain';
         d.syncError = matchesPrev
           ? `${diff}；更新在宿主落库前中断，原生记忆仍保留旧版本，可点击“更新原记忆”重试`
@@ -326,8 +336,9 @@ export async function writeMemory(client, store, id, opts = {}) {
         return d;
       }
 
-      if (['sending', 'uncertain'].includes(d.syncStatus)) {
-        const matchesPrev = Boolean(pending?.previousBasis && memoryBasis(existing) === pending.previousBasis);
+      // A read-only reconciliation restores stale but retains the original baseline.
+      if (pending || ['sending', 'uncertain'].includes(d.syncStatus)) {
+        const matchesPrev = matchesPreviousWrite(existing, pending);
         if (!matchesPrev) {
           const expRaw = pending ? pending.rawText : fallbackExpected.rawText;
           const expSum = pending ? pending.summary : fallbackExpected.summary;
@@ -359,6 +370,12 @@ export async function writeMemory(client, store, id, opts = {}) {
       await store.putDoc(d);
       let updated;
       try {
+        // Model generation can take time; preserve native edits made since the first read.
+        const latest = await findWrittenMemory(client, d, opts);
+        if (!matchesPreviousWrite(latest, d.pendingWrite)) {
+          throw new Error('处理期间原生记忆或图谱已变化，未覆盖；请先在 Layla 中核对');
+        }
+        stopped(opts.signal);
         const rows = await client.memories.createOrUpdate([{ ...payload, knowledgeGraphJSON: graphJSON }], opts.signal ? { signal: opts.signal } : {});
         const receipt = rows?.find(m => m.id === existing.id && owns(m, d));
         if (!receipt) throw new Error('宿主未返回原记忆的更新回执');
