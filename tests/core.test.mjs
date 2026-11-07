@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { CARD_SYNC_END, CARD_SYNC_START, applyCardSyncBlock, archiveSessionId, buildCardSyncBlock, confirmedWakeTime, createProfile, dailyTimelineFacts, extractWakeMention, hasUnconfirmedWakeTime, stripCardSyncBlock, validatePlan, templatePlan, epoch, parts, contextAt, advanceProfile, sleepPhase, makeSnapshot, parseJSON, validateDocument, memoryPayload, documentId, upgradeProfile } from '../src/core.js';
+import { CARD_SYNC_END, CARD_SYNC_START, applyCardSyncBlock, archiveSessionId, buildCardSyncBlock, confirmedWakeTime, continuousSleepBlock, createProfile, dailyTimelineFacts, extractWakeMention, hasUnconfirmedWakeTime, stripCardSyncBlock, validatePlan, templatePlan, epoch, parts, contextAt, advanceProfile, sleepPhase, makeSnapshot, parseJSON, validateDocument, memoryPayload, documentId, upgradeProfile } from '../src/core.js';
 const character = { id: 'role-a', data: { data: { name: '测试角色' } } };
 const day = '2026-11-01';
 
@@ -196,3 +196,124 @@ test('R1.3 / R2: Timezone consistency, default now, and wakeRecords object norma
   const up3 = upgradeProfile(validInput);
   assert.equal(up3.wakeRecords[day].at, morningAt);
 });
+
+test('R1.2 / R2: continuousSleepBlock accurately identifies contiguous sleep blocks and morning start', () => {
+  const nodes = [
+    { id: 's1', start: 0, end: 360, kind: 'sleep' },
+    { id: 's2', start: 360, end: 480, kind: 'sleep' },
+    { id: 'w1', start: 480, end: 720, kind: 'work' },
+    { id: 'n1', start: 720, end: 780, kind: 'nap' },
+    { id: 'w2', start: 780, end: 1260, kind: 'leisure' },
+    { id: 's3', start: 1260, end: 1440, kind: 'sleep' }
+  ];
+  const b0 = continuousSleepBlock(nodes, 0);
+  assert.deepEqual(b0, { start: 0, end: 480, startIndex: 0, endIndex: 1, containsMorningStart: true });
+
+  const b1 = continuousSleepBlock(nodes, 1);
+  assert.deepEqual(b1, { start: 0, end: 480, startIndex: 0, endIndex: 1, containsMorningStart: true });
+
+  const bEvening = continuousSleepBlock(nodes, 5);
+  assert.deepEqual(bEvening, { start: 1260, end: 1440, startIndex: 5, endIndex: 5, containsMorningStart: false });
+
+  assert.equal(continuousSleepBlock(nodes, 2), null); // 'work' is not sleep
+  assert.equal(continuousSleepBlock(nodes, 3), null); // 'nap' is not sleep
+  assert.equal(continuousSleepBlock(nodes, -1), null); // out of bounds
+  assert.equal(continuousSleepBlock(nodes, 99), null); // out of bounds
+  assert.equal(continuousSleepBlock([], 0), null);
+});
+
+test('R1.2 / R2: Defect 2: Early evening sleep before settings.sleepStart is protected from morning wakeAt', () => {
+  const p = createProfile(character, epoch(day, 0));
+  p.settings.sleepStart = '23:30'; // default preference is 23:30 (1410 min)
+  p.settings.sleepEnd = '08:00';
+  p.plans[day] = {
+    source: 'custom',
+    nodes: [
+      { id: 'm-sleep', start: 0, end: 480, kind: 'sleep', summary: '晨间睡眠' },
+      { id: 'day-activity', start: 480, end: 1260, kind: 'work', summary: '日间工作' },
+      { id: 'early-sleep', start: 1260, end: 1440, kind: 'sleep', summary: '提前就寝' } // 21:00 starts early sleep
+    ]
+  };
+  // Morning confirmed wake time is 08:30 (510 min)
+  const morningWakeAt = epoch(day, 510, p.settings.timezone);
+  p.wakeRecords[day] = { at: morningWakeAt, timezone: p.settings.timezone };
+
+  // 1. Morning sleep after wakeAt must be awake
+  const morningAfterWakeTs = epoch(day, 470, p.settings.timezone); // 07:50
+  // Note: 07:50 is before 08:30 wakeAt, so morning sleep at 07:50 should still be deep_sleep
+  assert.equal(sleepPhase(p, morningAfterWakeTs), 'deep_sleep');
+
+  // Morning after wakeAt (08:35):
+  const morningAwakeTs = epoch(day, 515, p.settings.timezone); // in day-activity node
+  assert.equal(sleepPhase(p, morningAwakeTs), 'awake');
+
+  // 2. Early evening sleep at 21:10 (1270 min): must NOT be treated as morning sleep or canceled by morningWakeAt!
+  const eveningStartTs = epoch(day, 1270, p.settings.timezone);
+  assert.equal(sleepPhase(p, eveningStartTs), 'falling_asleep');
+
+  // Early evening sleep at 21:40 (1300 min):
+  const eveningLightTs = epoch(day, 1300, p.settings.timezone);
+  assert.equal(sleepPhase(p, eveningLightTs), 'light_sleep');
+
+  // Early evening sleep at 22:15 (1335 min):
+  const eveningDeepTs = epoch(day, 1335, p.settings.timezone);
+  assert.equal(sleepPhase(p, eveningDeepTs), 'deep_sleep');
+});
+
+test('R1.2 / R2: Defect 2: advanceProfile protects early evening sleep and maintains resting state', () => {
+  const p = createProfile(character, epoch(day, 0));
+  p.settings.sleepStart = '23:30';
+  p.settings.sleepEnd = '08:00';
+  p.plans[day] = {
+    source: 'custom',
+    nodes: [
+      { id: 'm-sleep', start: 0, end: 480, kind: 'sleep', summary: '晨间睡眠' },
+      { id: 'day-activity', start: 480, end: 1260, kind: 'work', summary: '日间工作' },
+      { id: 'early-sleep', start: 1260, end: 1440, kind: 'sleep', summary: '提前就寝' } // 21:00
+    ]
+  };
+  p.wakeRecords[day] = { at: epoch(day, 510, p.settings.timezone), timezone: p.settings.timezone };
+
+  // Set profile state at 21:00 (1260 min) with low energy
+  const startTs = epoch(day, 1260, p.settings.timezone);
+  p.state.updatedAt = startTs;
+  p.state.energy = 30;
+  p.state.hunger = 40;
+  p.state.arousal = 0.5;
+
+  // Advance by 90 minutes to 22:30 (1350 min)
+  const endTs = epoch(day, 1350, p.settings.timezone);
+  const advanced = advanceProfile(p, endTs);
+
+  // In early evening sleep, energy should recover (resting = true)
+  assert.ok(advanced.state.energy > 30, `energy should recover during early evening sleep (was 30, now ${advanced.state.energy})`);
+  assert.ok(advanced.state.arousal < 0.5, `arousal should decrease during sleep (was 0.5, now ${advanced.state.arousal})`);
+});
+
+test('R1.1 / R2: memoryPayload supports reflection and strict mode intercepts unconfirmed/conflicting wake', () => {
+  const reflectionDoc = {
+    id: 'doc-refl-1',
+    characterId: 'role-a',
+    kind: 'reflection',
+    day: '2026-11-01',
+    title: '反思与整理',
+    body: '今天10:00起床后，反思了昨日的项目进展。',
+    summary: '10:00起床，反思了昨日项目进展。',
+    createdAt: Date.now(),
+    timelineFacts: { wakeTime: '08:44', wakeSource: 'manual' } // confirmed wake is 08:44, text claims 10:00
+  };
+
+  // 1. In strict mode, memoryPayload must throw
+  assert.throws(
+    () => memoryPayload(reflectionDoc, { strict: true }),
+    /文稿包含未确认或冲突的起床时间，已严格拦截原生记忆生成/
+  );
+
+  // 2. Non-strict mode does not throw and computes payload
+  const payload = memoryPayload(reflectionDoc);
+  assert.ok(payload);
+  assert.ok(payload.rawText.includes('反思与整理'));
+  // Conflicting wake time 08:44 vs 10:00 in summary means wakeTag is empty or not matching conflicting claim
+  assert.ok(!payload.summary.includes('已确认 10:00 起床'));
+});
+

@@ -182,8 +182,9 @@ test('diary graph normalizes 08:44 vs 8:44 time spans and projects 1-hop dated f
   assert.ok(graph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01动作' && x.object === '整理了读书笔记'));
   const legacy = { ...d, timelineFacts: { wakeTime: '08:44', wakeSource: 'diary' } };
   const legacyGraph = readTriples(buildGraph(extracted, graphContext(legacy, memoryPayload(legacy), '瑠璃子'), legacy));
-  assert.ok(legacyGraph.some(x => x.subject === c.recordNode && x.relationship === '记录中作息'));
+  assert.ok(!legacyGraph.some(x => x.subject === c.recordNode && x.relationship === '记录中作息'));
   assert.ok(!legacyGraph.some(x => x.subject === '瑠璃子' && x.relationship === '2026-11-01作息'));
+  assert.ok(legacyGraph.some(x => x.subject === c.recordNode && x.relationship === '记录中地点'));
 });
 
 test('R1.4 / R2: Reflection documents pass confirmedWakeTime and project 1-hop dated facts', () => {
@@ -217,3 +218,138 @@ test('R1.4 / R2: Reflection documents pass confirmedWakeTime and project 1-hop d
   const cUnconf = graphContext(unconfirmed, memoryPayload(unconfirmed), '瑠璃子');
   assert.equal(cUnconf.confirmedWakeTime, null);
 });
+
+test('R1.1 / R2: writeMemory strictly intercepts initial write when diary contains unconfirmed wake time', async t => {
+  const f = fixture(t);
+  const diaryDoc = {
+    id: documentId(role.id, 'diary', '2026-11-01'),
+    characterId: role.id,
+    sessionId: 'original-session',
+    kind: 'diary',
+    day: '2026-11-01',
+    title: '早起晨跑',
+    body: '今天早上8:30起床，去湖边跑步半小时。',
+    summary: '8:30起床，去湖边跑步半小时。',
+    createdAt: now,
+    syncStatus: 'pending'
+  };
+  await f.init(diaryDoc);
+
+  // Profile wakeRecords is empty; 8:30 is unconfirmed wake time.
+  await assert.rejects(
+    writeMemory(f.client, f.store, diaryDoc.id),
+    /文稿包含未确认或冲突的起床时间，已严格拦截写入原生记忆；请核对起床时间后重新生成文稿/
+  );
+
+  // Must NOT call native client.memories.createOrUpdate
+  assert.equal(f.writes.length, 0, 'No native memory write should have occurred');
+
+  // Local draft remains pending
+  const stored = await f.store.getDoc(diaryDoc.id);
+  assert.equal(stored.syncStatus, 'pending');
+});
+
+test('R1.1 / R2: writeMemory strictly intercepts stale in-place update when diary has conflicting wake time', async t => {
+  const f = fixture(t);
+  const diaryDoc = {
+    id: documentId(role.id, 'diary', '2026-11-01'),
+    characterId: role.id,
+    sessionId: 'original-session',
+    kind: 'diary',
+    day: '2026-11-01',
+    title: '作息修改',
+    body: '今天10:00起床，睡得很晚才起。',
+    summary: '10:00起床，睡得很晚。',
+    createdAt: now,
+    syncStatus: 'stale',
+    memoryId: 50
+  };
+  const native = { ...memoryPayload(diaryDoc), id: 50, rawText: '原记忆文本' };
+  await f.init(diaryDoc, native);
+
+  // Set profile confirmed wake time to '08:44' (524 min)
+  const p = await f.store.getProfile(role.id);
+  p.wakeRecords['2026-11-01'] = { at: epoch('2026-11-01', 524, 'Asia/Shanghai'), timezone: 'Asia/Shanghai' };
+  await f.store.putProfile(p);
+
+  // Attempting stale in-place update with text claiming 10:00 (conflicting with 08:44)
+  await assert.rejects(
+    writeMemory(f.client, f.store, diaryDoc.id),
+    /文稿包含未确认或冲突的起床时间，已严格拦截写入原生记忆/
+  );
+
+  // Native memory #50 must remain untouched
+  const currentNative = f.memories.find(m => m.id === 50);
+  assert.equal(currentNative.rawText, '原记忆文本');
+});
+
+test('R1.1 / R2: syncDocumentWakeFacts updates timelineFacts and allows writeMemory after recording wake time', async t => {
+  const f = fixture(t);
+  const diaryDoc = {
+    id: documentId(role.id, 'diary', '2026-11-01'),
+    characterId: role.id,
+    sessionId: 'original-session',
+    kind: 'diary',
+    day: '2026-11-01',
+    title: '晨间记录',
+    body: '今天早上08:44起床，开始一天的生活。',
+    summary: '08:44起床，开始一天的生活。',
+    createdAt: now,
+    syncStatus: 'pending',
+    timelineFacts: { wakeTime: '', wakeSource: 'schedule' }
+  };
+  await f.init(diaryDoc);
+
+  // Initially fails because 08:44 is unconfirmed
+  await assert.rejects(
+    writeMemory(f.client, f.store, diaryDoc.id),
+    /未确认或冲突/
+  );
+
+  // Now record confirmed wake time in profile
+  const p = await f.store.getProfile(role.id);
+  p.wakeRecords['2026-11-01'] = { at: epoch('2026-11-01', 524, 'Asia/Shanghai'), timezone: 'Asia/Shanghai' };
+  await f.store.putProfile(p);
+
+  // Now writeMemory succeeds!
+  const saved = await writeMemory(f.client, f.store, diaryDoc.id);
+  assert.equal(saved.syncStatus, 'written');
+  assert.equal(saved.timelineFacts.wakeTime, '08:44');
+  assert.equal(saved.timelineFacts.wakeSource, 'manual');
+  assert.equal(f.writes.length, 1);
+});
+
+test('R1.1 / R2: buildGraph rejects unconfirmed wake triples when opts.strict is true and drops them when false', () => {
+  const d = {
+    id: documentId(role.id, 'diary', '2026-11-01'),
+    characterId: role.id,
+    sessionId: 'original-session',
+    kind: 'diary',
+    day: '2026-11-01',
+    title: '晨记',
+    body: '早上09:00起床，在阳台看书。',
+    summary: '09:00起床，在阳台看书。',
+    createdAt: now,
+    timelineFacts: { wakeTime: '', wakeSource: 'schedule' }
+  };
+  const c = graphContext(d, memoryPayload(d), '瑠璃子');
+  assert.equal(c.confirmedWakeTime, null);
+
+  const extracted = JSON.stringify([
+    { subject: c.recordNode, relationship: '记录中作息', object: '09:00 起床' },
+    { subject: c.recordNode, relationship: '记录中地点', object: '阳台' }
+  ]);
+
+  // With strict: true, buildGraph throws
+  assert.throws(
+    () => buildGraph(extracted, c, d, { strict: true }),
+    /图谱包含未确认或冲突的起床时间，未写入原生记忆/
+  );
+
+  // With strict: false (default), unconfirmed wake is dropped from both details and direct
+  const graph = readTriples(buildGraph(extracted, c, d));
+  assert.ok(!graph.some(x => x.object.includes('09:00') || x.object.includes('9:00')));
+  assert.ok(graph.some(x => x.relationship === '记录中地点' && x.object === '阳台'));
+  assert.ok(graph.some(x => x.relationship === '2026-11-01地点' && x.object === '阳台'));
+});
+

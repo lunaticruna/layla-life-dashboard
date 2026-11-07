@@ -113,6 +113,13 @@ export function createMockSQL(initial, storage = null) {
     if (query === SQL.getProfile) rows = data.profiles[args[0]] ? [{ data: JSON.stringify(data.profiles[args[0]]) }] : [];
     else if (query === SQL.listProfiles) rows = Object.values(data.profiles).map(p => ({ data: JSON.stringify(p) }));
     else if (query === SQL.putProfile) { data.profiles[args[0]] = JSON.parse(args[1]); changed = 1; }
+    else if (query === SQL.casProfile) {
+      const current = data.profiles[args[1]];
+      if (current && JSON.stringify(current) === args[2]) {
+        data.profiles[args[1]] = JSON.parse(args[0]);
+        changed = 1;
+      }
+    }
     else if (query === SQL.getDoc) rows = data.documents[args[0]] ? [{ data: JSON.stringify(data.documents[args[0]]) }] : [];
     else if (query === SQL.listDocs) rows = Object.values(data.documents).filter(d => d.characterId === args[0]).sort((a, b) => b.createdAt - a.createdAt).map(d => ({ data: JSON.stringify(d) }));
     else if (query === SQL.putDoc) { data.documents[args[0]] = JSON.parse(args[5]); changed = 1; }

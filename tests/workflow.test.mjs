@@ -260,3 +260,93 @@ test('R1.1 / R2: runBackground tomorrow plan pregeneration failure records notic
 
   f.db.close();
 });
+
+test('R1.4 / R2: runBackground document exception safely merges latest profile and retains tomorrowAttemptAt retry cooldown', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.autoPlan = true;
+  p.settings.planAheadHour = 20; // 20:00, now is 22:00 -> triggers preGenerate plan
+  p.settings.diaryHour = 21; // 21:00, now is 22:00 -> triggers diary generation
+  await f.store.putProfile(p);
+
+  // Force both preGenerate plan and diary generation to fail
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:PLAN') || req.messages[0].content.includes('TASK:SCHEDULE')) {
+      throw new Error('LLM plan generation failed');
+    }
+    if (req.messages[0].content.includes('TASK:DIARY')) {
+      throw new Error('LLM diary generation failed');
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+
+  const savedProfile = await f.store.getProfile(f.role.id);
+
+  // Both retry cooldown timestamps must be recorded and neither overwritten
+  assert.equal(savedProfile.state.tomorrowAttemptAt, now, 'tomorrowAttemptAt cooldown must be preserved');
+  assert.equal(savedProfile.state.documentAttemptAt, now, 'documentAttemptAt cooldown must be recorded');
+
+  assert.match(res.message, /次日日程暂未生成/);
+  assert.match(res.message, /文稿生成或写入异常/);
+
+  f.db.close();
+});
+
+test('R1.1 / R2: runBackground autoWrite fails due to strict wake interception, keeping draft and clean error notice', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.autoPlan = false;
+  p.settings.autoWrite = true; // autoWrite enabled
+  p.settings.diaryHour = 21; // 21:00, now is 22:00 -> triggers diary generation
+  await f.store.putProfile(p);
+
+  // LLM generates a diary containing unconfirmed wake time (e.g. 09:30起床)
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:DIARY')) {
+      return {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              title: '晨光与整理',
+              body: '今天09:30起床，整理了书桌并阅读了书籍。',
+              summary: '09:30起床，整理书桌阅读。'
+            })
+          }
+        }]
+      };
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+
+  // Verify native write was blocked (0 native memories created)
+  assert.equal(f.creates, 0, 'No native memory write should have occurred');
+
+  // Verify draft document was preserved in local store
+  const docs = await f.store.docs(f.role.id);
+  const diaryDoc = docs.find(d => d.kind === 'diary');
+  assert.ok(diaryDoc, 'Local diary draft must be preserved');
+  assert.equal(diaryDoc.syncStatus, 'pending', 'Draft syncStatus must remain pending');
+
+  // Verify run record and notice describe the interception clearly
+  assert.match(res.message, /文稿生成或写入异常：文稿包含未确认或冲突的起床时间/);
+
+  const runs = (await f.store.runs(f.role.id)).map(r => r.data || r);
+  const errRun = runs.find(r => r.status === 'error' && r.kind === 'diary');
+  assert.ok(errRun);
+  assert.match(errRun.message, /严格拦截写入原生记忆/);
+
+  f.db.close();
+});
+

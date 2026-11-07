@@ -1,6 +1,24 @@
-import { VERSION, marker, memoryPayload, uid } from './core.js';
+import { VERSION, confirmedWakeTime, hasUnconfirmedWakeTime, marker, memoryPayload, uid } from './core.js';
 import { ask } from './model.js';
 import { GRAPH_RULES, buildGraph, graphContext, hasGraph, isEmptyGraph, memoryBasis, nativePayload, sameGraph } from './memory-graph.js';
+
+export function syncDocumentWakeFacts(d, profile, now = Date.now()) {
+  const wake = profile ? confirmedWakeTime(profile, d.day, now) : '';
+  d.timelineFacts ||= {};
+  d.timelineFacts.wakeTime = wake;
+  d.timelineFacts.wakePhrase = wake ? `${wake}起床` : '';
+  d.timelineFacts.wakeSource = wake ? 'manual' : (d.timelineFacts.wakeSource === 'manual' ? (d.timelineFacts.firstAwakeTime ? 'scene' : 'schedule') : (d.timelineFacts.wakeSource || 'schedule'));
+  return wake;
+}
+
+export function assertNoUnconfirmedWake(d, wakeTime) {
+  if (['diary', 'reflection'].includes(d.kind)) {
+    const scanText = [d.title, d.body, d.summary].filter(Boolean).join('\n');
+    if (hasUnconfirmedWakeTime(scanText, wakeTime)) {
+      throw new Error('文稿包含未确认或冲突的起床时间，已严格拦截写入原生记忆；请核对起床时间后重新生成文稿');
+    }
+  }
+}
 
 function stopped(signal) { if (signal?.aborted) throw new Error('已停止记忆处理'); }
 const validId = id => Number.isSafeInteger(id) && id > 0;
@@ -58,6 +76,9 @@ async function enrichLocked(client, store, d, opts) {
     }
     const basis = memoryBasis(native), originalGraph = native.knowledgeGraphJSON;
     const profile = await store.getProfile(d.characterId);
+    const confirmedWake = syncDocumentWakeFacts(d, profile);
+    assertNoUnconfirmedWake(d, confirmedWake);
+    await store.putDoc(d);
     const context = graphContext(d, native, profile?.name || d.characterId);
     if (!d.graphDraftJSON || d.graphDraftBasis !== basis) {
       d.graphStatus = 'generating'; d.graphError = ''; await store.putDoc(d);
@@ -118,6 +139,9 @@ export async function writeMemory(client, store, id, opts = {}) {
     const profile = await store.getProfile(d.characterId);
     const sessionMode = opts.memorySessionMode || profile?.settings?.memorySessionMode || 'isolated';
     const characterName = profile?.name || d.characterId;
+    const confirmedWake = syncDocumentWakeFacts(d, profile);
+    assertNoUnconfirmedWake(d, confirmedWake);
+    await store.putDoc(d);
     if (sessionMode === 'active' && !d.sessionId) {
       if (!profile?.selectedSessionId) throw new Error('这个角色还没有原生会话。先进行一次原生聊天，再更新生活状态并重试');
       d.sessionId = profile.selectedSessionId; await store.putDoc(d);

@@ -105,12 +105,38 @@ export function contextAt(profile, ts = Date.now()) {
   const currentEnd = current ? epoch(p.day, current.end, profile.settings.timezone) : ts + 60000;
   return { ...p, nodes, current, next, currentStart, currentEnd, nextDate, nextStart: next ? epoch(nextDate, next.start, profile.settings.timezone) : 0, source: profile.plans[p.day]?.source || 'template' };
 }
+export function continuousSleepBlock(nodes, index) {
+  if (!Array.isArray(nodes) || index < 0 || index >= nodes.length) return null;
+  const target = nodes[index];
+  if (target?.kind !== 'sleep') return null;
+  let startIdx = index;
+  while (startIdx > 0 && nodes[startIdx - 1]?.kind === 'sleep') {
+    startIdx--;
+  }
+  let endIdx = index;
+  while (endIdx < nodes.length - 1 && nodes[endIdx + 1]?.kind === 'sleep') {
+    endIdx++;
+  }
+  return {
+    start: nodes[startIdx].start,
+    end: nodes[endIdx].end,
+    startIndex: startIdx,
+    endIndex: endIdx,
+    containsMorningStart: nodes[startIdx].start === 0
+  };
+}
 export function sleepPhase(profile, ts, context = contextAt(profile, ts)) {
   if (!['sleep', 'nap'].includes(context.current?.kind)) return 'awake';
-  const sleepStartMin = parseTime(profile.settings?.sleepStart) ?? 1260;
-  const isMorningSleep = context.current?.kind === 'sleep' && (context.current.start === 0 || context.current.start < sleepStartMin);
-  const wakeAt = profile.wakeRecords?.[context.day]?.at;
-  if (isMorningSleep && Number.isSafeInteger(wakeAt) && wakeAt <= ts) return 'awake';
+  if (context.current?.kind === 'sleep') {
+    const nodes = context.nodes || getNodes(profile, context.day);
+    const index = nodes.indexOf(context.current);
+    const block = continuousSleepBlock(nodes, index >= 0 ? index : nodes.findIndex(n => n.start <= context.minute && context.minute < n.end));
+    if (block && block.containsMorningStart) {
+      const wakeAt = profile.wakeRecords?.[context.day]?.at;
+      const blockEndTs = epoch(context.day, block.end, profile.settings?.timezone);
+      if (Number.isSafeInteger(wakeAt) && wakeAt <= blockEndTs && wakeAt <= ts) return 'awake';
+    }
+  }
   if (profile.state.awakeUntil > ts) return 'woken';
   if (context.current.kind === 'nap') return 'light_sleep';
   let start = context.currentStart;
@@ -153,11 +179,29 @@ export function advanceProfile(input, now = Date.now(), messages = []) {
   while (cursor < now) {
     while (wi < wakes.length && wakes[wi].timestamp <= cursor) { state.awakeUntil = Math.max(state.awakeUntil, wakes[wi].timestamp + 30 * 60000); wi++; }
     const c = contextAt(profile, cursor);
-    const sleepStartMin = parseTime(profile.settings?.sleepStart) ?? 1260;
-    const isMorningSleep = c.current?.kind === 'sleep' && (c.current.start === 0 || c.current.start < sleepStartMin);
+    let isMorningSleep = false;
     const wakeAt = profile.wakeRecords?.[c.day]?.at;
-    const isAwakeByRecord = isMorningSleep && Number.isSafeInteger(wakeAt) && wakeAt <= cursor;
-    const boundary = Math.min(c.currentEnd, cursor + 20 * 60000, now, wakes[wi]?.timestamp ?? Infinity, state.awakeUntil > cursor ? state.awakeUntil : Infinity, (isMorningSleep && Number.isSafeInteger(wakeAt) && wakeAt > cursor) ? wakeAt : Infinity);
+    let blockEndTs = 0;
+    if (c.current?.kind === 'sleep') {
+      const nodes = c.nodes || getNodes(profile, c.day);
+      const index = nodes.indexOf(c.current);
+      const block = continuousSleepBlock(nodes, index >= 0 ? index : nodes.findIndex(n => n.start <= c.minute && c.minute < n.end));
+      if (block && block.containsMorningStart) {
+        blockEndTs = epoch(c.day, block.end, profile.settings?.timezone);
+        if (Number.isSafeInteger(wakeAt) && wakeAt <= blockEndTs) {
+          isMorningSleep = true;
+        }
+      }
+    }
+    const isAwakeByRecord = isMorningSleep && wakeAt <= cursor;
+    const boundary = Math.min(
+      c.currentEnd,
+      cursor + 20 * 60000,
+      now,
+      wakes[wi]?.timestamp ?? Infinity,
+      state.awakeUntil > cursor ? state.awakeUntil : Infinity,
+      (isMorningSleep && wakeAt > cursor) ? wakeAt : Infinity
+    );
     const end = Math.max(cursor + 1, boundary), h = (end - cursor) / 3600000;
     const resting = ['sleep', 'nap'].includes(c.current?.kind) && state.awakeUntil <= cursor && !isAwakeByRecord;
     const key = `${c.day}/${c.current?.id}`;
@@ -294,10 +338,10 @@ export function extractWakeMentions(text = '') {
 export function extractWakeMention(text = '') { return extractWakeMentions(text)[0] || null; }
 
 export function confirmedWakeTime(profile, day, now = Date.now()) {
-  const record = profile.wakeRecords?.[day];
+  const record = profile?.wakeRecords?.[day];
   const at = record?.at;
   if (!Number.isSafeInteger(at) || at <= 0 || at > now) return '';
-  const tz = record?.timezone || profile.settings?.timezone || 'Asia/Shanghai';
+  const tz = record?.timezone || profile?.settings?.timezone || 'Asia/Shanghai';
   const local = parts(at, tz);
   return local.day === day ? hhmm(local.minute) : '';
 }
@@ -312,11 +356,11 @@ export function dailyTimelineFacts(profile, scenes = [], day = null, now = Date.
   const nowParts = parts(now, tz);
   const targetDay = day || nowParts.day;
   const nodes = getNodes(profile, targetDay);
-  const morningSleep = nodes[0]?.kind === 'sleep' ? nodes[0] : null;
-  const nightSleep = nodes[nodes.length - 1]?.kind === 'sleep' ? nodes[nodes.length - 1] : null;
-  const plannedWakeMinute = morningSleep ? morningSleep.end : (parseTime(profile.settings.sleepEnd) ?? 480);
+  const morningBlock = nodes[0]?.kind === 'sleep' ? continuousSleepBlock(nodes, 0) : null;
+  const nightBlock = nodes[nodes.length - 1]?.kind === 'sleep' ? continuousSleepBlock(nodes, nodes.length - 1) : null;
+  const plannedWakeMinute = morningBlock ? morningBlock.end : (parseTime(profile.settings.sleepEnd) ?? 480);
   const plannedWakeTime = hhmm(plannedWakeMinute);
-  const plannedSleepStart = nightSleep ? hhmm(nightSleep.start) : (profile.settings.sleepStart || '23:30');
+  const plannedSleepStart = nightBlock ? hhmm(nightBlock.start) : (profile.settings.sleepStart || '23:30');
   const dayScenes = experiencedScenes(scenes, profile.characterId, now, targetDay);
   const firstAwakeScene = dayScenes.find(r => r.phase === 'awake') || null;
   const firstAwakeMinute = firstAwakeScene ? parts(firstAwakeScene.generatedAt, tz).minute : null;
@@ -399,7 +443,13 @@ export function memoryPayload(document, opts = {}) {
   const mode = opts.memorySessionMode || document.memorySessionMode;
   const sessionId = opts.sessionId || (mode === 'isolated' ? archiveSessionId(document.characterId) : mode === 'active' ? (document.sessionId || archiveSessionId(document.characterId)) : (document.sessionId || archiveSessionId(document.characterId)));
   const provenance = document.kind === 'dream' ? '这是梦境，不是双方真实经历。' : document.kind === 'work' ? '这是创作作品，不是现实事件。' : '角色当日第一人称生活与作息记录；涉及与用户的互动以实际聊天为准。';
-  const wakeTime = document.kind === 'diary' && document.timelineFacts?.wakeSource === 'manual' ? document.timelineFacts.wakeTime : '';
+  const wakeTime = ['diary', 'reflection'].includes(document.kind) && document.timelineFacts?.wakeSource === 'manual' ? document.timelineFacts.wakeTime : '';
+  if (opts.strict && ['diary', 'reflection'].includes(document.kind)) {
+    const scanText = [document.title, document.body, document.summary].filter(Boolean).join('\n');
+    if (hasUnconfirmedWakeTime(scanText, wakeTime)) {
+      throw new Error('文稿包含未确认或冲突的起床时间，已严格拦截原生记忆生成；请重新生成文稿');
+    }
+  }
   const summaryText = String(document.summary || '');
   const hasWakeInSummary = extractWakeMentions(summaryText).some(mention => mention.time === wakeTime);
   const wakeTag = wakeTime && !hasWakeInSummary ? `（已确认 ${wakeTime} 起床）` : '';

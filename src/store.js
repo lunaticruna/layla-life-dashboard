@@ -18,6 +18,7 @@ export const SQL = {
   getProfile: 'SELECT data FROM ll_profiles WHERE character_id = ?',
   listProfiles: 'SELECT data FROM ll_profiles',
   putProfile: 'INSERT INTO ll_profiles (character_id, data) VALUES (?, ?) ON CONFLICT(character_id) DO UPDATE SET data = excluded.data',
+  casProfile: 'UPDATE ll_profiles SET data = ? WHERE character_id = ? AND data = ?',
   getDoc: 'SELECT data FROM ll_documents WHERE id = ?',
   listDocs: 'SELECT data FROM ll_documents WHERE character_id = ? ORDER BY created_at DESC',
   putDoc: 'INSERT INTO ll_documents (id, character_id, day, kind, created_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data',
@@ -108,13 +109,38 @@ export function createStore(client) {
     return JSON.parse(encoded);
   }
 
-  async function populateProfilePlans(profile) {
+  async function populateProfilePlans(profile, rawJson = null) {
     const legacyEntries = Object.entries(profile.plans || {});
     if (legacyEntries.length) {
       for (const [day, plan] of legacyEntries) {
         await persistPlan(profile.characterId, day, { ...plan, generatedAt: plan?.generatedAt || profile.createdAt }, true);
       }
-      await store.putProfile(profile);
+      const { plans, ...dataWithoutPlans } = profile;
+      const strippedJson = JSON.stringify(dataWithoutPlans);
+      if (rawJson) {
+        const res = await query(SQL.casProfile, [strippedJson, profile.characterId, rawJson]);
+        if (!res.rowsAffected) {
+          const freshRow = (await query(SQL.getProfile, [profile.characterId])).rows[0];
+          if (freshRow) {
+            const freshData = JSON.parse(freshRow.data);
+            if (freshData.plans && Object.keys(freshData.plans).length > 0) {
+              const { plans: _, ...strippedFresh } = freshData;
+              await query(SQL.casProfile, [JSON.stringify(strippedFresh), profile.characterId, freshRow.data]);
+            }
+            profile = upgradeProfile(freshData);
+          }
+        }
+      } else {
+        const currRow = (await query(SQL.getProfile, [profile.characterId])).rows[0];
+        if (currRow) {
+          const currData = JSON.parse(currRow.data);
+          if (currData.plans && Object.keys(currData.plans).length > 0) {
+            const { plans: _, ...strippedCurr } = currData;
+            await query(SQL.casProfile, [JSON.stringify(strippedCurr), profile.characterId, currRow.data]);
+          }
+          profile = upgradeProfile(currData);
+        }
+      }
     }
     const saved = await store.plans(profile.characterId, { limit: 365 });
     profile.plans = Object.fromEntries(saved.map(plan => [plan.day, plan]));
@@ -129,15 +155,18 @@ export function createStore(client) {
       }
     },
     async getProfile(id) {
-      const p = decode(await query(SQL.getProfile, [id]))[0];
-      if (!p) return null;
-      const upgraded = upgradeProfile(p);
-      return populateProfilePlans(upgraded);
+      const r = await query(SQL.getProfile, [id]);
+      const raw = r.rows[0];
+      if (!raw) return null;
+      const upgraded = upgradeProfile(JSON.parse(raw.data));
+      return populateProfilePlans(upgraded, raw.data);
     },
     async profiles() {
-      const list = decode(await query(SQL.listProfiles)).map(upgradeProfile);
-      for (const prof of list) {
-        await populateProfilePlans(prof);
+      const r = await query(SQL.listProfiles);
+      const list = [];
+      for (const row of r.rows) {
+        const upgraded = upgradeProfile(JSON.parse(row.data));
+        list.push(await populateProfilePlans(upgraded, row.data));
       }
       return list;
     },

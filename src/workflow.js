@@ -380,7 +380,9 @@ export async function runBackground(client, store, opts = {}) {
   const selected = profiles[0], character = (await listCharacters(client)).find(c => c.id === selected.characterId);
   if (!character) return { status: 'skipped', message: '已配置的角色不可用，本轮没有写入任何原生记忆' };
   const clock = opts.now == null ? {} : { now };
-  const { profile, scene } = await refreshLife(client, store, character, clock);
+  const refreshed = await refreshLife(client, store, character, clock);
+  let profile = refreshed.profile;
+  const scene = refreshed.scene;
   now = opts.now ?? Date.now();
   let document = null; const local = parts(now, profile.settings.timezone);
   const notices = [];
@@ -396,6 +398,8 @@ export async function runBackground(client, store, opts = {}) {
     } catch (err) {
       notices.push(`次日日程暂未生成：${String(err.message || err).slice(0, 300)}`);
     }
+    const latest = await store.getProfile(character.id);
+    if (latest) profile = latest;
   }
 
   const docCooldown = 20 * 60 * 1000;
@@ -411,8 +415,19 @@ export async function runBackground(client, store, opts = {}) {
         document = await writeMemory(client, store, document.id);
       }
     } catch (err) {
-      profile.state.documentAttemptAt = now;
-      await store.putProfile(profile);
+      await store.lock(character.id, async () => {
+        const latest = await store.getProfile(character.id) || profile;
+        latest.state = {
+          ...(profile.state || {}),
+          ...(latest.state || {}),
+          documentAttemptAt: now
+        };
+        if (profile.state?.tomorrowAttemptAt && !latest.state.tomorrowAttemptAt) {
+          latest.state.tomorrowAttemptAt = profile.state.tomorrowAttemptAt;
+        }
+        await store.putProfile(latest);
+        profile = latest;
+      });
       const errKind = (local.minute >= profile.settings.diaryHour * 60) ? 'diary' : 'dream';
       await store.addRun({
         id: uid('run'),

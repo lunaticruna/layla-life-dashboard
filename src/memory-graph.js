@@ -68,18 +68,22 @@ export function isEmptyGraph(value) {
 export function sameGraph(a, b) {
   try { return JSON.stringify(readTriples(a).map(t => JSON.stringify(t)).sort()) === JSON.stringify(readTriples(b).map(t => JSON.stringify(t)).sort()); } catch { return false; }
 }
-export function buildGraph(text, context, d) {
+export function buildGraph(text, context, d, opts = {}) {
   const rawDetails = readTriples(text);
   if (rawDetails.length > 20) throw new Error('图谱关系超过 20 条，请重试');
   const details = [];
+  const isFictional = d.kind === 'dream' || d.kind === 'work';
   for (const t of rawDetails) {
     if (t.subject !== context.recordNode || !context.allowedRelationships.includes(t.relationship)) throw new Error('图谱未遵守记录范围，未写入原生记忆');
     const grounded = groundObject(t.object, context.rawText, context.summary);
     if (!grounded) throw new Error('图谱包含无法在原文核对的内容，未写入原生记忆');
     if (grounded === d.title || grounded.startsWith('【Layla生活记录:')) throw new Error('图谱只有标题或技术标记，请提取正文细节');
+    if (!isFictional && hasUnconfirmedWakeTime(grounded, context.confirmedWakeTime)) {
+      if (opts?.strict) throw new Error('图谱包含未确认或冲突的起床时间，未写入原生记忆');
+      continue;
+    }
     details.push({ subject: t.subject, relationship: t.relationship, object: grounded });
   }
-  const isFictional = d.kind === 'dream' || d.kind === 'work';
   const direct = [];
   if (!isFictional) {
     const wake = [...extractWakeMentions(context.summary), ...extractWakeMentions(context.rawText)]
