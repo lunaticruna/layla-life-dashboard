@@ -175,6 +175,14 @@ npm run serve
 
 项目结构：`src/memory.js` 为记忆保存、图谱补全与恢复流程，`memory-graph.js` 为图谱格式校验，`model.js` 为前后台共用模型调用；`src/core.js` 为纯生活计算；`store.js` 为私有存储与锁；`workflow.js` 为角色读取、独立场景生成、文稿整理和回写；`main.js` 为中文界面；`demo.js` 为独立演示环境；`task-entry.js` 为后台入口。
 
+## 自动构建制品
+
+[Build install package](https://github.com/lunaticruna/layla-life-dashboard/actions/workflows/build.yml) 会在包含该工作流的分支／标签推送、PR 更新时构建，也支持在 Actions 页点击 **Run workflow** 选择分支手动触发。
+
+流程使用 Node.js 24，依次执行 `npm ci`、`npm test` 和 `npm run pack:zip`，再核对安装 ZIP 的完整性、根目录文件及其与 `dist/` 的一致性。检查失败时不上传安装包。
+
+打开一次成功运行，在 **Artifacts** 下载 `layla-life-dashboard-zh-<版本>-<分支>-<提交号>.zip`，可直接用于 Layla 导入；ZIP 根目录包含 `app.json`，没有额外的压缩包外层。旁边的同名 `.zip.sha256` 文件用于校验下载内容。制品保留 30 天，完整提交号与 SHA-256 同时显示在运行摘要中。PR 制品对应实际构建的临时合并提交，提交号以摘要为准。
+
 ## 验证范围
 
 已完成的自动检查记录见源码包内 `VALIDATION.md`。浏览器模拟与本地自动测试不代替 iOS 真机测试。当前无法访问你的 Layla 宿主，因此不宣称已验证宿主 ABI、原生记忆索引／召回、iOS 后台调度和分享面板。
