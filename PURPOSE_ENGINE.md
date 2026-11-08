@@ -1,10 +1,10 @@
-# Purpose Engine 首版 · 0.4.0-dev.1
+# Purpose Engine 首版 · 0.4.0-dev.2
 
 本版本在 `dev` 开发，基于已合并的 `main` 提交 `ce41ef5`（保留 PR #3 的自动构建）。它是可安装的开发预览，尚未完成 iOS 真机验收，也不属于 `UAT_FREEZE.md` 的 0.3.0 冻结基线。
 
 ## 使用
 
-1. 升级前从生活设置导出当前角色记录。构建 `npm ci && npm test && npm run pack:zip`，导入 `layla-life-dashboard-zh-0.4.0-dev.1.zip`，ZIP 根目录包含 `app.json`、`index.html`、`task.js` 与图标；安装标题沿用 `Layla Life Dashboard`，覆盖安装的数据保留需真机核对。
+1. 升级前从生活设置导出当前角色记录。构建 `npm ci && npm test && npm run pack:zip`，导入 `layla-life-dashboard-zh-0.4.0-dev.2.zip`，ZIP 根目录包含 `app.json`、`index.html`、`task.js` 与图标；安装标题沿用 `Layla Life Dashboard`，覆盖安装的数据保留需真机核对。
 2. 打开“主动交互”，选择一个已有原生会话，保存设置。默认是**观察模式**，后台默认关闭。点击“评估一次”，可从目标会话形成有逐字证据的目的假设；也可手动登记一个目的，明确属于角色分享还是用户事项跟进。
 3. 查看来源、有效期、表达和本轮暂缓理由。观察记录不会变成未来消息，也不会在切换模式后自动发送。已完成或不希望再提的目的可记录反馈。
 4. 准备试发时，在 Dream 自身界面关闭其主动消息，保留 Reflect、impression/印象与其他整理功能；在宿主排程管理中核对既存的 Dream 消息。本小应用无法读取或修改 Dream 私有数据库，也没有已验证的 API 可自动切换 Dream 内部开关。
@@ -33,6 +33,30 @@ SDK 返回的会话目录最多读取最近 50 个；目标及待核对会话各
 
 未知回执会阻止后续自动发送。点“仅核对排程”尝试恢复；若队列为空且历史中也没有证据，应保留待核对状态并核查宿主。本版不提供盲目重发或假称投递成功的解除按钮。
 
+## 后台任务提示角色不可用
+
+开启后台整理表示这条配置进入后台候选队列；实际执行前仍需用其 `characterId` 与本轮 SDK 返回的角色 ID 核对。`purpose` 与 `life` 使用独立配置队列，可以选中不同角色。
+
+| 日志 | 含义 |
+| --- | --- |
+| `purpose.status = no_goal` | 目的引擎已评估，本轮没有合适目的；正常空闲结果，不表示生活整理被关闭。 |
+| `life.status = skipped` | 生活整理未处理角色。旧版只说角色不可用，缺少定位所需的 ID。 |
+| `reason = background_character_mismatch` | SDK 返回了角色，但已开启的后台配置 ID 均未与之匹配。可能是旧配置残留、角色删除后重新导入导致 ID 变化，或可见性/ID 类型差异；不能仅凭此断定角色已被删除。 |
+| `reason = host_characters_empty` | SDK 本轮返回空角色列表。配置保留，后续宿主恢复返回时可继续执行，不会自动删除或关闭配置。 |
+| 外层 `status = partial` | 子任务返回错误、跳过、本轮回执不确定或能力缺失状态，或有未匹配配置需要注意；其他子任务的执行结果仍分别保留。 |
+
+0.4.0-dev.1 的生活队列先选最久未运行配置，再核对角色；首条配置未匹配时会反复跳过，阻止后续可用角色获得机会。0.4.0-dev.2 已改为先核对再选取，并为主动队列采用相同处理。仅按实际 ID 匹配，不按角色名迁移设置、生活记录、记忆编号或原生排程。
+
+新版任务结果包含 `appVersion`，可确认后台脚本已升级。`life.diagnostics` 和有后台候选的 `purpose.diagnostics` 包含：
+
+- `configuredCount` / `visibleCount` / `matchedCount` / `unavailableCount`：本轮候选配置、SDK 可见角色、匹配配置与未匹配配置的完整数量。
+- `selected`：本轮实际选中的角色 ID、ID 类型和名字。
+- `configured` / `visible` / `unavailable`：候选配置、SDK 可见角色与未匹配配置的 ID 对照；各最多 20 条，超限在 `truncated` 标记。ID 类型保留，不自动将数字和字符串混绑。
+
+同层的 `life.warnings` / `purpose.warnings` 提示未匹配配置。即使其余角色已完成工作，仍会报告这些配置；未解决的旧排程信息继续保留，需核对宿主。
+
+升级后重新打开小应用，核对当前角色的后台开关并保存，在任务管理器手动运行一次。若仍跳过，提供这次任务的 `appVersion` 和 `life.diagnostics` 即可先区分配置 ID 失配与后台 SDK 返回空列表，不需要提供聊天正文。
+
 ## 模块和持久化
 
 - `src/purpose-engine.js`：纯目的校验、置信度衰减、机会判断、表达校验和排程归属比较。
@@ -40,6 +64,7 @@ SDK 返回的会话目录最多读取最近 50 个；目标及待核对会话各
 - `src/purpose-runner.js`：两阶段模型调用、SDK 上下文读取、操作记录、核对、撤销和反馈。
 - `src/purpose-view.js`：中文配置、原因解释、来源、记录与反馈。
 - `src/task-runner.js`：分别调用主动引擎和原生活整理，异常结果独立报告；最终 `task.js` 是无模块导入的 classic script，返回任务 Promise。
+- `src/background-roles.js`：基于本轮宿主列表选择可匹配的后台配置，保留类型并生成有长度上限的角色诊断。
 
 原有 0.3.0 生活、日记、梦境和记忆回写路径保留。目的数据有界保存：最近 100 条已结束表达、所有未解决投递、最多 200 个目的条目及最近 256 个已读来源指纹。长期留档请使用导出。
 

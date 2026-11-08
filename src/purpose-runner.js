@@ -1,6 +1,7 @@
 import { advanceProfile, createProfile, makeSnapshot, normalizeTimestamp, parseJSON, stripCardSyncBlock, uid } from './core.js';
 import { ask } from './model.js';
 import { listCharacters } from './workflow.js';
+import { selectBackgroundRole, unavailableBackgroundMessage } from './background-roles.js';
 import { createPurposeStore } from './purpose-store.js';
 import { ACTIVE_DELIVERIES, DECISIONS, HOUR, MINUTE, acceptPurposeGoals, clipPurpose, expirePurposeGoals,
   inPurposeQuiet, normalizePurposeConfig, ownedSchedule, purposeOpportunity, sourceKey, validatePurposeDraft } from './purpose-engine.js';
@@ -116,7 +117,7 @@ export async function runPurpose(client, store, character, opts = {}) {
       if (!previous || previous.reason !== reason || at - previous.at >= HOUR || ['queued', 'observed', 'error', 'uncertain'].includes(reason)) {
         await store.addRun({ id: uid('purpose-run'), characterId: character.id, at, kind: 'purpose', status: ['error', 'uncertain'].includes(reason) ? 'error' : 'ok', message: `${DECISIONS[reason] || reason}${extra.error ? `：${extra.error}` : ''}` });
       }
-      return { status: reason, message: DECISIONS[reason] || reason, ...extra };
+      return { status: reason, characterId: record.characterId, character: character.data?.data?.name || '', message: DECISIONS[reason] || reason, ...extra };
     };
     try {
       // Re-read the card so a stale WebView cannot keep using an edited role.
@@ -249,12 +250,9 @@ export async function runPurposeBackground(client, store, opts = {}) {
   await store.init(); const records = (await createPurposeStore(store).list()).filter(r => (r.config.background && r.config.mode !== 'off') || pending(r).length)
     .sort((a, b) => a.lastRunAt - b.lastRunAt);
   if (!records.length) return { status: 'idle', message: '暂无已启用的后台主动交互' };
-  const record = records[0], character = (await listCharacters(client)).find(c => c.id === record.characterId);
-  if (!character) {
-    await createPurposeStore(store).lock(record.characterId, async (latest, save) => {
-      latest.lastRunAt = clockFor(opts)(); latest.lastDecision = { reason: 'error', at: latest.lastRunAt, error: '角色已不可用，原排程需在宿主核对' }; await save();
-    });
-    return { status: 'error', message: '主动交互角色已不可用，原排程需在宿主核对' };
-  }
-  return runPurpose(client, store, character, { ...opts, reconcileOnly: !record.config.background || record.config.mode === 'off' });
+  const selection = selectBackgroundRole(records, await listCharacters(client));
+  const { record, character, warnings, diagnostics } = selection;
+  if (!character) return { status: 'skipped', reason: selection.reason, warnings, diagnostics, message: `${unavailableBackgroundMessage(selection)}；未解决的原排程仍需在宿主核对` };
+  const result = await runPurpose(client, store, character, { ...opts, reconcileOnly: !record.config.background || record.config.mode === 'off' });
+  return { ...result, warnings, diagnostics, message: warnings.length ? `${result.message}；${warnings.join('；')}` : result.message };
 }

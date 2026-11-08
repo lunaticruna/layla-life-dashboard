@@ -1,6 +1,6 @@
 # 0.3.0 UAT 基线：0.3.0-rc.1
 
-> 历史基线记录。`dev` 上的 0.4.0-dev.1 Purpose Engine 不属于本次冻结；其预览范围与真机步骤见 [PURPOSE_ENGINE.md](PURPOSE_ENGINE.md)。
+> 历史基线记录。`dev` 上的 0.4.0 系列 Purpose Engine 开发预览不属于本次冻结；其预览范围与真机步骤见 [PURPOSE_ENGINE.md](PURPOSE_ENGINE.md)。
 
 状态：工程修复与独立复核通过，冻结进入 UAT。应用内版本保持 `0.3.0`，候选标识用于区分本次 UAT 构建。
 

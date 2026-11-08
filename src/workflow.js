@@ -4,6 +4,7 @@ export { ask } from './model.js';
 export { writeMemory, enrichMemory, recordRetrievalCheck } from './memory.js';
 import { DOC_KINDS, PHASES, VERSION, advanceProfile, applyCardSyncBlock, buildCardSyncBlock, clone, createProfile, dailyTimelineFacts, documentId, epoch, experiencedScenes, formatTime, hash, hasUnconfirmedWakeTime, hhmm, makeSnapshot, nextDay, normalizeTimestamp, parseJSON, parseTime, parts, sceneTarget, stripCardSyncBlock, uid, validateDocument, validatePlan, validateScene } from './core.js';
 import { pickDayType, templateItems, isSleep } from './schedule.js';
+import { selectBackgroundRole, unavailableBackgroundMessage } from './background-roles.js';
 
 export async function listCharacters(client, signal) {
   const found = [];
@@ -378,15 +379,16 @@ export async function runBackground(client, store, opts = {}) {
   const profiles = (await store.profiles()).filter(p => p.settings.background).sort((a, b) => (a.lastRunAt || 0) - (b.lastRunAt || 0));
   if (!profiles.length) return { status: 'idle', message: '尚未为角色启用后台生活整理' };
   // One role, at most one current scene and one document per pass.
-  const selected = profiles[0], character = (await listCharacters(client)).find(c => c.id === selected.characterId);
-  if (!character) return { status: 'skipped', message: '已配置的角色不可用，本轮没有写入任何原生记忆' };
+  const selection = selectBackgroundRole(profiles, await listCharacters(client));
+  const { character, warnings, diagnostics } = selection;
+  if (!character) return { status: 'skipped', reason: selection.reason, warnings, diagnostics, message: unavailableBackgroundMessage(selection) };
   const clock = opts.now == null ? {} : { now };
   const refreshed = await refreshLife(client, store, character, clock);
   let profile = refreshed.profile;
   const scene = refreshed.scene;
   now = opts.now ?? Date.now();
   let document = null; const local = parts(now, profile.settings.timezone);
-  const notices = [];
+  const notices = [...warnings];
 
   const planAheadHour = profile.settings.planAheadHour ?? 22;
   const tomorrowDay = nextDay(local.day);
@@ -443,5 +445,5 @@ export async function runBackground(client, store, opts = {}) {
   }
   if (scene?.status === 'error') notices.push(`场景未更新：${scene.message}`);
   if (document?.graphError) notices.push(`文本保留，图谱未完成：${document.graphError}`);
-  return { status: 'ok', character: profile.name, updatedAt: now, scene: scene?.record?.id || null, document: document?.id || null, memoryGraph: document?.graphStatus || null, memoryGraphError: document?.graphError || null, message: notices.length ? `生活已推进；${notices.join('；')}` : document ? '生活已推进，内容已归档；原生记忆召回状态仍待验证' : '生活状态与当前场景已更新，本轮无需整理新文稿' };
+  return { status: 'ok', characterId: character.id, character: profile.name, warnings, diagnostics, updatedAt: now, scene: scene?.record?.id || null, document: document?.id || null, memoryGraph: document?.graphStatus || null, memoryGraphError: document?.graphError || null, message: notices.length ? `生活已推进；${notices.join('；')}` : document ? '生活已推进，内容已归档；原生记忆召回状态仍待验证' : '生活状态与当前场景已更新，本轮无需整理新文稿' };
 }
