@@ -1,0 +1,111 @@
+name: Build install package
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Test and package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run regression tests
+        run: npm test
+
+      - name: Build install ZIP
+        run: npm run pack:zip
+
+      - name: Verify and identify package
+        id: package
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import shutil
+          import subprocess
+          import zipfile
+
+          root = Path.cwd()
+          pkg = json.loads((root / 'package.json').read_text())
+          source = root / f"{pkg['name']}-{pkg['version']}.zip"
+          expected = {p.name: p.read_bytes() for p in (root / 'dist').iterdir() if p.is_file()}
+          required = {'app.json', 'index.html', 'task.js', 'icon.png'}
+          with zipfile.ZipFile(source) as archive:
+              names = archive.namelist()
+              if archive.testzip() is not None:
+                  raise RuntimeError('Install ZIP failed CRC verification')
+              if len(names) != len(set(names)) or set(names) != set(expected) or not required.issubset(names):
+                  raise RuntimeError('Install ZIP must contain the dist files at its root exactly once')
+              for name in names:
+                  if archive.read(name) != expected[name]:
+                      raise RuntimeError(f'Install ZIP differs from dist: {name}')
+
+          commit = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          ref = os.environ.get('GITHUB_HEAD_REF') or os.environ['GITHUB_REF_NAME']
+          label = re.sub(r'[^A-Za-z0-9._-]+', '-', ref).strip('.-')[:60] or 'build'
+          output = Path(os.environ['RUNNER_TEMP']) / 'layla-build-artifacts'
+          output.mkdir(parents=True, exist_ok=True)
+          package = output / f"{pkg['name']}-{pkg['version']}-{label}-{commit[:7]}.zip"
+          shutil.copyfile(source, package)
+          digest = hashlib.sha256(package.read_bytes()).hexdigest()
+          checksum = package.with_suffix('.zip.sha256')
+          checksum.write_text(f'{digest}  {package.name}\n')
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as handle:
+              handle.write(f'path={package}\nchecksum_path={checksum}\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as handle:
+              handle.write(
+                  f'## Install package\n\n'
+                  f'- File: `{package.name}`\n'
+                  f'- Commit: `{commit}`\n'
+                  f'- Ref: `{label}`\n'
+                  f'- SHA-256: `{digest}`\n\n'
+                  'Download the install ZIP from **Artifacts** below and import it into Layla.\n'
+              )
+          print(f'Verified {len(expected)} install files: {package.name}')
+          print(f'SHA-256: {digest}')
+          PY
+
+      - name: Upload install ZIP
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.package.outputs.path }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload SHA-256 checksum
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ steps.package.outputs.checksum_path }}
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
