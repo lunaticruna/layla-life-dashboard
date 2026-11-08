@@ -1,6 +1,6 @@
 {
   "name": "layla-life-dashboard-zh",
-  "version": "0.3.0",
+  "version": "0.4.0-dev.1",
   "private": true,
   "type": "module",
   "description": "Layla 中文生活看板：生活时间线、日记、梦境与可追踪的记忆回写",

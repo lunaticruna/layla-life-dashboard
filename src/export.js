@@ -164,6 +164,8 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
 
   // 1. Fetch Profile
   const profile = state?.profile || (store?.getProfile ? await store.getProfile(characterId) : null) || {};
+  const purpose = state?.purpose?.characterId === characterId ? state.purpose : null;
+  const exportVersion = purpose ? '1.2.0' : '1.1.0';
 
   // 2. Fetch Documents
   const documents = (state?.docs && state.docs.length) ? state.docs : (store?.docs ? await store.docs(characterId) : []) || [];
@@ -275,8 +277,8 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
 
   const isZipInit = !opts.forceJson;
   const manifest = {
-    exportVersion: '1.1.0',
-    specVersion: '1.1.0',
+    exportVersion,
+    specVersion: exportVersion,
     appVersion: VERSION,
     version: VERSION,
     exportedAt: now,
@@ -319,13 +321,19 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
     { name: 'native-memories/native_memories.json', data: JSON.stringify(nativeMemories, null, 2) }
   ];
 
+  if (purpose) {
+    manifest.files.push({ path: 'purpose/purpose.json', description: '目的假设、来源、配置、反馈与投递操作记录（不包含宿主排程所有权迁移）' });
+    zipFiles.push({ name: 'purpose/purpose.json', data: JSON.stringify(purpose, null, 2) });
+    zipFiles[0].data = JSON.stringify(manifest, null, 2);
+  }
+
   let isZip = true;
   let filename = `life-backup-${characterId}-${now}.zip`;
   let base64 = '';
 
   const buildFallbackJson = () => JSON.stringify({
-    exportVersion: '1.1.0',
-    specVersion: '1.1.0',
+    exportVersion,
+    specVersion: exportVersion,
     appVersion: VERSION,
     archiveMode: 'json_fallback',
     version: manifest.version,
@@ -334,6 +342,7 @@ export async function exportCharacterBackup(state, store, client, opts = {}) {
     characterName,
     manifest: { ...manifest, archiveMode: 'json_fallback' },
     profile,
+    ...(purpose ? { purpose } : {}),
     schedules: dailyFactsArray,
     plans,
     documents,

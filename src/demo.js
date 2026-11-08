@@ -1,5 +1,6 @@
 import { installLaylaMock } from '@layla-network/sdk';
 import { SQL } from './store.js';
+import { PURPOSE_SQL } from './purpose-store.js';
 import { createProfile, documentId, epoch, parts, templatePlan } from './core.js';
 
 const KEY = 'layla-life-demo-v1';
@@ -106,9 +107,18 @@ export function createMockSQL(initial, storage = null) {
   let data = initial;
   data.scenes ||= {};
   data.plans ||= {};
+  data.purposes ||= {};
   const persist = () => storage?.setItem(KEY, JSON.stringify(data));
   function execute(query, args = []) {
     let rows = [], changed = 0;
+    if (query === PURPOSE_SQL.create) return { rows, rowsAffected: 0, insertId: 0 };
+    if (query === PURPOSE_SQL.get) rows = data.purposes[args[0]] ? [{ data: JSON.stringify(data.purposes[args[0]]) }] : [];
+    else if (query === PURPOSE_SQL.list) rows = Object.values(data.purposes).map(p => ({ data: JSON.stringify(p) }));
+    else if (query === PURPOSE_SQL.insert) { if (!data.purposes[args[0]]) { data.purposes[args[0]] = JSON.parse(args[1]); changed = 1; } }
+    else if (query === PURPOSE_SQL.cas) {
+      if (data.purposes[args[1]] && JSON.stringify(data.purposes[args[1]]) === args[2]) { data.purposes[args[1]] = JSON.parse(args[0]); changed = 1; }
+    }
+    else {
     if ([SQL.profiles, SQL.docs, SQL.runs, SQL.locks, SQL.scenes, SQL.scenesByScope, SQL.scenesByCharacter, SQL.plans, SQL.plansByCharacter].includes(query)) return { rows, rowsAffected: 0, insertId: 0 };
     if (query === SQL.getProfile) rows = data.profiles[args[0]] ? [{ data: JSON.stringify(data.profiles[args[0]]) }] : [];
     else if (query === SQL.listProfiles) rows = Object.values(data.profiles).map(p => ({ data: JSON.stringify(p) }));
@@ -144,6 +154,7 @@ export function createMockSQL(initial, storage = null) {
     else if (query === SQL.getLock) rows = data.locks[args[0]] ? [{ owner: data.locks[args[0]].owner }] : [];
     else if (query === SQL.release) { if (data.locks[args[0]]?.owner === args[1]) { delete data.locks[args[0]]; changed = 1; } }
     else throw new Error(`演示数据库不支持此查询：${query}`);
+    }
     if (changed) persist(); return { rows, rowsAffected: changed, insertId: 0 };
   }
   return { execute, get data() { return data; } };
@@ -185,6 +196,14 @@ export function installDemo() {
     respond: messages => {
       const system = String(messages.find(m => m.role === 'system')?.content || '');
       const day = parts(Date.now()).day;
+      if (system.includes('TASK:PURPOSE_GOALS')) {
+        const c = JSON.parse(messages.find(m => m.role === 'user').content), m = c.conversation.find(m => m.role === 'assistant' && m.text.includes('读书'));
+        return JSON.stringify({ goals: m ? [{ owner: 'character', kind: 'share', summary: '想分享整理读书笔记时的想法', evidence: '想把前几天读书时留下的笔记整理一下。', sourceIds: [m.id], confidence: .85, waitMinutes: 0 }] : [] });
+      }
+      if (system.includes('TASK:PURPOSE_EXPRESSION')) {
+        const c = JSON.parse(messages.find(m => m.role === 'user').content);
+        return JSON.stringify({ goalId: c.purpose.id, sourceIds: c.purpose.sourceIds, timeless: true, text: '你愿意听我说说那份读书笔记吗？有几处想法想和你一起慢慢捋一捋。' });
+      }
       if (system.includes('TASK:MEMORY_GRAPH')) {
         const c = JSON.parse(messages.find(m => m.role === 'user').content);
         const detail = c.rawText.includes('窗边') ? '窗边' : c.rawText.includes('河') ? '河' : c.rawText.slice(-12);

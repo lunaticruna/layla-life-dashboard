@@ -28,6 +28,7 @@ new vm.Script(scriptMatch[1]);
 await fs.writeFile(path.join(out, 'index.html'), html);
 const task = await build({ entryPoints: [path.join(root, 'src/task-entry.js')], bundle: true, format: 'iife', globalName: 'LifeTask', target: 'es2020', write: false, minify: false });
 await fs.writeFile(path.join(out, 'task.js'), `${task.outputFiles[0].text}\nLifeTask.run();\n`);
+await fs.copyFile(path.join(root, 'PURPOSE_ENGINE.md'), path.join(out, 'PURPOSE_ENGINE.md'));
 for (const filename of ['app.json', 'icon.png']) await fs.copyFile(path.join(root, 'public', filename), path.join(out, filename));
 for (const [src, dst] of [['README.md', 'README_中文.md'], ['CHANGELOG.md', 'CHANGELOG.md'], ['UAT_FREEZE.md', 'UAT_FREEZE.md'], ['VALIDATION.md', 'VALIDATION.md'], ['UPGRADE_0.2.1_中文.md', 'UPGRADE_0.2.1_中文.md'], ['EXPORT_FORMAT_SPEC.md', 'EXPORT_FORMAT_SPEC.md'], ['THIRD_PARTY_NOTICES.txt', 'THIRD_PARTY_NOTICES.txt'], ['LICENSE', 'LICENSE']]) await fs.copyFile(path.join(root, src), path.join(out, dst));
 console.log(JSON.stringify({ directory: out, htmlBytes: Buffer.byteLength(html), sdk: '7.6.2', taskCompletion: 'LifeTask.run()', installMetadata }));

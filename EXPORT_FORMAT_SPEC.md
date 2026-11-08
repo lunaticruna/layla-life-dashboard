@@ -1,3 +1,19 @@
+# 0.4.0-dev.1 可选扩展 · specVersion / exportVersion 1.2.0
+
+开发预览的完整备份在存在当前角色的目的记录时使用 `1.2.0`，保留以下 `1.1.0` 全部文件与字段，新增 `purpose/purpose.json` 并在 `manifest.files` 中登记；降级 JSON 在根对象增加 `purpose`。无目的数据或目的记录属于其他角色时，旧调用仍输出 `1.1.0`。`appVersion` 和 `version` 始终来自当前应用版本。
+
+`purpose` 是 `version: 1` 的对象，包含 `characterId`、`config`（模式、目标会话、后台开关、安静时段、间隔、额度、有效期及 Dream 配置完成声明）、`createdAt`、`activatedAt`、`lastRunAt`、`lastExtractAt`、`expressionAttemptAt`（可选）、`lastDecision`、`seenSources`、`goals`、`deliveries`。
+
+- `goals` 保留 `id`、`owner`、`kind`、`summary`、`evidence`、`source`、`sourceIds`、`sessionId`、`confidence`、`value`、`createdAt`、`updatedAt`、`notBefore`、`expiresAt`、`state` 与可选反馈时间。`source=manual` 不等于原生聊天证实；自动来源 ID 由会话、消息 ID 和内容指纹组成。
+- `deliveries` 保留目的 ID、表达正文、状态，以及观察时间或预约请求。预约请求包含宿主接口所需的角色、会话、毫秒时间戳和固定正文；操作记录还保留 `reservedAt`、`expiresAt`、`timezone`、`hostId`、核对错误和可选的原生历史/回复信号、撤销信息。
+- 排程状态与宿主 ID **仅为原设备操作记录**，不能导入其他设备后据此认领、撤销或重发原排程。新底座应把目的视为有来源的假设，重新核对上下文和投递状态；本版没有自动恢复/导入界面。
+- `reservedAt` 表示请求前已登记使用额度，不等于宿主已接受；`queued` 不等于 `delivered`。本地 `expiresAt` 不是宿主 TTL，不能推定过期消息已经取消。
+- 原有 `recordCounts` / `summary` 保留原统计口径，目的与投递条数从新文件数组读取。详细状态、界面说明和真机边界见 [PURPOSE_ENGINE.md](PURPOSE_ENGINE.md)。
+
+以下是保留的 1.1.0 基础格式规范。
+
+---
+
 # Layla Life Dashboard v0.3.0 — Atomic Export & Backup Format Specification
 # 生活手记 v0.3.0 全量生活记录导出与备份配套格式规范（原子级字典与记忆底座迁移指引）
 

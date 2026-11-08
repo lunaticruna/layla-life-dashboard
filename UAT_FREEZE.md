@@ -1,5 +1,7 @@
 # 0.3.0 UAT 基线：0.3.0-rc.1
 
+> 历史基线记录。`dev` 上的 0.4.0-dev.1 Purpose Engine 不属于本次冻结；其预览范围与真机步骤见 [PURPOSE_ENGINE.md](PURPOSE_ENGINE.md)。
+
 状态：工程修复与独立复核通过，冻结进入 UAT。应用内版本保持 `0.3.0`，候选标识用于区分本次 UAT 构建。
 
 冻结分支为 `uat/0.3.0-rc.1`；最终提交 SHA 与检查结果记录在 [Issue #1](https://github.com/lunaticruna/layla-life-dashboard/issues/1)。验收使用该 SHA，不跟随开发分支后续变化。UAT 期间只接收阻断性修复；需要修改时创建新的候选版本并重新验证。

@@ -10,6 +10,7 @@ import {
 } from '../src/export.js';
 import { createZip, crc32 } from '../src/zip.js';
 import { VERSION, createProfile, epoch } from '../src/core.js';
+import { createPurposeRecord } from '../src/purpose-engine.js';
 
 /**
  * Pure JavaScript PKZIP archive parser for automated test verification.
@@ -155,6 +156,23 @@ function setupTestEnvironment(characterOverride = null) {
     nativeMemories
   };
 }
+
+test('export: purpose extension is present in both ZIP manifest and fallback JSON', async t => {
+  const f = setupTestEnvironment(); t.after(() => f.db.close()); await f.store.init();
+  const purpose = createPurposeRecord(f.character.id, epoch('2026-11-08', 840));
+  purpose.deliveries.push({ id: 'unresolved', status: 'uncertain', hostId: 42, request: { character_id: f.character.id, session_id: 's', timestamp: 1, message: 'hello' } });
+  const state = { character: f.character, purpose };
+  const zip = await exportCharacterBackup(state, f.store, f.client);
+  const parsed = parseZipArchive(zip.base64), manifest = parsed.files['manifest.json'].json();
+  assert.equal(manifest.specVersion, '1.2.0');
+  assert.ok(manifest.files.some(f => f.path === 'purpose/purpose.json'));
+  assert.deepEqual(parsed.files['purpose/purpose.json'].json(), purpose);
+  const fallback = await exportCharacterBackup(state, f.store, f.client, { forceJson: true });
+  const json = JSON.parse(Buffer.from(fallback.base64, 'base64').toString('utf8'));
+  assert.equal(json.specVersion, '1.2.0'); assert.deepEqual(json.purpose, purpose);
+  const foreign = await exportCharacterBackup({ character: f.character, purpose: { ...purpose, characterId: 'other' } }, f.store, f.client, { forceJson: true });
+  assert.equal(JSON.parse(Buffer.from(foreign.base64, 'base64').toString()).purpose, undefined);
+});
 
 test('export: full data completeness (>25 runs, docs, scenes, graph, paginated native memories)', async t => {
   const f = setupTestEnvironment();
@@ -493,7 +511,7 @@ test('export: manifest metadata conforms to specification and exact counts', asy
 
   // Validate Manifest Fields
   assert.equal(manifest.version, VERSION, 'Manifest version must match core.js VERSION');
-  assert.equal(manifest.appVersion, '0.3.0', 'appVersion must be 0.3.0');
+  assert.equal(manifest.appVersion, VERSION, 'appVersion must match the app version');
   assert.equal(manifest.specVersion, '1.1.0', 'specVersion must be 1.1.0');
   assert.equal(manifest.exportVersion, '1.1.0', 'exportVersion must be 1.1.0');
   assert.equal(manifest.exportedAt, fixedNow, 'exportedAt must match execution timestamp');

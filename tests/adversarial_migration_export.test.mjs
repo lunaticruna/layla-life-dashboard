@@ -515,8 +515,8 @@ test('Challenger Stress Test 3: Export Format PKZIP Deep Byte Verification, Chec
 
   assert.equal(manifest.specVersion, '1.1.0', 'manifest.specVersion must be 1.1.0');
   assert.equal(manifest.exportVersion, '1.1.0', 'manifest.exportVersion must be 1.1.0');
-  assert.equal(manifest.appVersion, '0.3.0', 'manifest.appVersion must be 0.3.0');
-  assert.equal(manifest.version, '0.3.0', 'manifest.version must be 0.3.0');
+  assert.equal(manifest.appVersion, VERSION, 'manifest.appVersion must match VERSION');
+  assert.equal(manifest.version, VERSION, 'manifest.version must match VERSION');
   assert.equal(manifest.characterId, characterId);
   assert.equal(manifest.characterName, '对决测试角色·澪');
 

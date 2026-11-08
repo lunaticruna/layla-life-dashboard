@@ -2,7 +2,7 @@ import { DEFAULT_DAY_TYPES, pickDayType, normalizeItems, templateItems, applyCha
 export { DEFAULT_DAY_TYPES, pickDayType, normalizeItems, templateItems, applyChange, formatSyncTime, DEFAULT_VOICE, priorityLine, voiceText, buildVoiceBlock };
 
 // Life model inspired by Mai_life. All state belongs to the character simulation.
-export const VERSION = '0.3.0';
+export const VERSION = '0.4.0-dev.1';
 export const CARD_SYNC_START = '【生活手记·实时状态】';
 export const CARD_SYNC_END = '【/生活手记·实时状态】';
 export const KINDS = { sleep: '睡眠', nap: '午休', meal: '用餐', work: '工作', study: '学习', travel: '出行', leisure: '闲暇', rest: '休息' };

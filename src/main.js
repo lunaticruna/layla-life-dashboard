@@ -7,6 +7,10 @@ import { exportCharacterBackup } from './export.js';
 import { stringToBase64 } from './zip.js';
 import { installDemo } from './demo.js';
 import { icon, room } from './icons.js';
+import { createPurposeStore } from './purpose-store.js';
+import { ACTIVE_DELIVERIES, createPurposeRecord } from './purpose-engine.js';
+import { addPurposeGoal, cancelPurposeDelivery, configurePurpose, purposeFeedback, runPurpose } from './purpose-runner.js';
+import { purposeView } from './purpose-view.js';
 
 const isNative = typeof window.ReactNativeWebView?.postMessage === 'function';
 const demo = !isNative;
@@ -32,13 +36,13 @@ function modal(title, content, footer = '') {
 function clockText() { const p = parts(Date.now(), state.profile?.settings.timezone); return `${hhmm(p.minute)}<small>${String(p.second).padStart(2, '0')}</small>`; }
 function relative(ts) { if (!ts) return '尚未更新'; const mins = Math.floor((Date.now() - ts) / 60000); return mins <= 0 ? '刚刚更新' : mins < 60 ? `${mins} 分钟前更新` : `${Math.floor(mins / 60)} 小时前更新`; }
 function header() {
-  const title = { overview: '生活概览', schedule: '日程流转', journal: '日记与梦境', memory: '记忆交还', settings: '生活设置' }[state.tab];
+  const title = { overview: '生活概览', schedule: '日程流转', journal: '日记与梦境', memory: '记忆交还', purpose: '主动交互', settings: '生活设置' }[state.tab];
   const day = state.profile ? parts(Date.now(), state.profile.settings.timezone) : parts(Date.now());
   const week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][day.weekday];
   return `<header class="topbar"><div class="top-heading"><div class="breadcrumb">生活手记 <span>/</span> ${esc(title)}</div><h1>${esc(title)}</h1></div><div class="top-actions"><div class="top-date">${day.day.replaceAll('-', '.')}<span>${week}</span></div><span class="connection ${demo ? 'demo' : ''}"><i></i>${demo ? '演示模式' : 'Layla 已连接'}</span>${btn('更新生活', 'refresh', 'refresh', 'button primary compact')}</div></header>`;
 }
 function sidebar() {
-  const tabs = [['overview', 'grid', '生活概览'], ['schedule', 'flow', '日程流转'], ['journal', 'book', '日记与梦境'], ['memory', 'brain', '记忆交还'], ['settings', 'settings', '生活设置']];
+  const tabs = [['overview', 'grid', '生活概览'], ['schedule', 'flow', '日程流转'], ['journal', 'book', '日记与梦境'], ['memory', 'brain', '记忆交还'], ['purpose', 'heart', '主动交互'], ['settings', 'settings', '生活设置']];
   const pending = state.docs.filter(d => d.syncStatus !== 'written').length;
   return `<aside class="sidebar"><div class="brand"><div class="brand-symbol">${icon('leaf')}</div><div><strong>生活手记</strong><span>让日常慢慢留下痕迹</span></div></div><div class="role-switch"><span class="eyebrow">正在陪伴的角色</span><div class="role-select"><div class="avatar small">${state.portrait ? `<img src="${esc(state.portrait)}" alt="角色头像">` : esc(state.character?.data.data.name?.slice(0, 1) || '·')}</div><select id="character-select" aria-label="选择角色">${state.roles.length ? state.roles.map(c => `<option value="${esc(c.id)}" ${c.id === state.character?.id ? 'selected' : ''}>${esc(c.data.data.name || '未命名角色')}</option>`).join('') : '<option>暂无角色</option>'}</select></div></div><nav aria-label="主导航">${tabs.map(([id, glyph, label]) => `<button class="nav-item ${id === state.tab ? 'active' : ''}" type="button" data-tab="${id}">${icon(glyph)}<span>${label}</span>${id === 'memory' && pending ? `<b>${pending}</b>` : ''}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="side-note">${icon('leaf')}<p>生活会继续，<br>值得记住的事慢慢交还。</p></div><div class="sidebar-version">生活手记 ${VERSION}<span>${demo ? '浏览器演示' : `Layla ${esc(state.context?.app_version || '版本未知')}`}</span></div></div></aside>`;
 }
@@ -100,13 +104,14 @@ function settingsView() {
 function render() {
   if (state.loading) { root.innerHTML = '<div class="loading-screen"><div class="brand-symbol">' + icon('leaf') + '</div><h1>生活手记</h1><p>正在读取角色与生活记录…</p><div class="spinner"></div></div>'; return; }
   if (state.error || !state.character || !state.profile) { root.innerHTML = `<div class="loading-screen"><div class="brand-symbol">${icon('leaf')}</div><h1>${state.error ? '暂时无法打开看板' : '还没有可用角色'}</h1><p>${esc(state.error || '先在 Layla 中创建或导入一个角色，再打开生活手记。')}</p>${btn('重新连接', 'retry', 'refresh', 'button primary')}</div>`; return; }
-  const view = { overview, schedule: scheduleView, journal: journalView, memory: memoryView, settings: settingsView }[state.tab];
+  const view = { overview, schedule: scheduleView, journal: journalView, memory: memoryView, purpose: () => purposeView(state.purpose || createPurposeRecord(state.character.id), state.native?.sessions || [], state.profile.settings.timezone), settings: settingsView }[state.tab];
   root.innerHTML = `${sidebar()}<main class="main">${header()}${demo ? '<div class="demo-banner"><b>演示数据</b><span>尚未连接你的 Layla；这里的角色、天气、内容生成与记忆写入均为本地示例。</span></div>' : ''}<div class="content">${state.sceneGenerating ? `<div class="scene-generating" role="status"><div class="spinner"></div><span id="scene-progress">正在细化当前场景…</span>${btn('停止生成', 'stop-job', 'close', 'text-button')}</div>` : ''}${view()}</div></main>`;
   if (state.busy) root.querySelectorAll('button,select,input,textarea').forEach(el => { if (el.dataset.action !== 'stop-job') el.disabled = true; });
   state.renderedMinute = Math.floor(Date.now() / 60000);
 }
 async function reload() {
   state.profile = await store.getProfile(state.character.id);
+  state.purpose = await createPurposeStore(store).get(state.character.id) || createPurposeRecord(state.character.id);
   [state.docs, state.runs, state.scenes] = await Promise.all([store.docs(state.character.id), store.runs(state.character.id), store.scenes(state.character.id)]);
   render();
 }
@@ -200,6 +205,8 @@ async function saveSettings(form) {
     await store.putProfile(p);
   });
   await syncCharacterCard(client, store, state.character, { clear: !syncCard, forceSync: true });
+  const purpose = await createPurposeStore(store).get(state.character.id);
+  if (purpose?.deliveries.some(d => ACTIVE_DELIVERIES.includes(d.status))) await runPurpose(client, store, state.character, { reconcileOnly: true });
   await reload(); toast('这个角色的生活设置已保存');
 }
 function toBase64(text) { return stringToBase64(text); }
@@ -208,6 +215,22 @@ async function handleAction(action) {
   if (action === 'close-modal') { if (state.busy) { toast('正在生成，可以使用“停止生成”结束'); return; } closeModal(); return; }
   if (action === 'stop-job') { controller?.abort(); return; }
   if (state.busy) return;
+  if (action === 'purpose-run' || action === 'purpose-reconcile') {
+    const result = await job('评估主动交互机会', opts => runPurpose(client, store, state.character, { ...opts, reconcileOnly: action === 'purpose-reconcile' }));
+    if (result) toast(result.error || result.message, ['error', 'uncertain'].includes(result.status)); return;
+  }
+  if (action === 'purpose-export') {
+    const record = await createPurposeStore(store).get(state.character.id) || state.purpose;
+    return exportFile(`purpose-${state.character.id}-${Date.now()}.json`, JSON.stringify(record, null, 2));
+  }
+  if (action.startsWith('purpose-cancel:')) {
+    const result = await job('撤销主动消息排程', opts => cancelPurposeDelivery(client, store, state.character.id, action.slice(15), opts));
+    if (result) toast(result.deliveries.some(d => ACTIVE_DELIVERIES.includes(d.status)) ? '撤销尚待核对，请查看投递记录' : '已撤销排程'); return;
+  }
+  if (action.startsWith('purpose-feedback:')) {
+    const [, id, feedback] = action.split(':');
+    await purposeFeedback(store, state.character.id, id, feedback); await reload(); toast('目的反馈已记录'); return;
+  }
   if (action === 'retry') return init();
   if (action === 'go-schedule') { state.tab = 'schedule'; render(); return; }
   if (action === 'edit-plan') return editPlan();
@@ -237,6 +260,7 @@ async function handleAction(action) {
     if (result) { if (state.profile.settings.autoWrite && ['pending', 'stale'].includes(result.syncStatus)) await handleWrite(result.id); openDocument(result.id); } return;
   }
   if (action === 'export') {
+    state.purpose = await createPurposeStore(store).get(state.character.id) || state.purpose;
     const { filename, base64, isZip, stats } = await exportCharacterBackup(state, store, client);
     const result = await client.utils.saveFile(filename, base64, true);
     if (!result?.success) throw new Error(result?.message || '导出失败');
@@ -257,6 +281,14 @@ document.addEventListener('click', event => {
 });
 document.addEventListener('change', event => { if (event.target.id === 'character-select' && !state.busy) { state.loading = true; render(); choose(event.target.value).catch(e => { state.error = e.message; }).finally(() => { state.loading = false; render(); }); } });
 document.addEventListener('submit', event => {
+  if (['purpose-config-form', 'purpose-goal-form'].includes(event.target.id)) {
+    event.preventDefault(); if (state.busy) return;
+    const form = event.target, fd = new FormData(form);
+    void job(form.id === 'purpose-config-form' ? '保存主动交互设置' : '登记目的', async opts => {
+      if (form.id === 'purpose-goal-form') return addPurposeGoal(store, state.character.id, fd.get('summary'), fd.get('owner'), opts);
+      return configurePurpose(client, store, state.character.id, { ...Object.fromEntries(fd), background: fd.has('background'), dreamOutreachDisabled: fd.has('dreamOutreachDisabled') }, opts);
+    }).then(result => { if (result) toast(result.deliveries.some(d => ACTIVE_DELIVERIES.includes(d.status) && d.cancelRequested) ? '设置已保存，旧排程仍需核对' : form.id === 'purpose-config-form' ? '主动交互设置已保存' : '目的已登记，等待合适机会'); });
+  }
   if (event.target.id === 'retrieval-form') { event.preventDefault(); if (state.busy) return; const form = event.target, data = new FormData(form); state.busy = true;
     recordRetrievalCheck(store, form.dataset.id, { result: data.get('result'), cleanSession: data.has('cleanSession'), note: data.get('note') }).then(async () => { closeModal(); await reload(); openDocument(form.dataset.id); toast('已保存用户验收结果'); }).catch(e => toast(e.message || String(e), true)).finally(() => { state.busy = false; render(); });
   }
