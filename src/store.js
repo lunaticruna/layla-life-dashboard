@@ -2,6 +2,9 @@ import { upgradeProfile, templatePlan } from './core.js';
 import { upgradeDocument } from './memory-graph.js';
 import { applyChange } from './schedule.js';
 
+const planColumns = 'id, character_id, day, title, mood, day_type, nodes, changes, data, generated_at';
+const planBindings = '?, ?, ?, ?, ?, ?, ?, ?, ?, ?';
+
 export const SQL = {
   profiles: 'CREATE TABLE IF NOT EXISTS ll_profiles (character_id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   docs: 'CREATE TABLE IF NOT EXISTS ll_documents (id TEXT PRIMARY KEY, character_id TEXT NOT NULL, day TEXT NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL, data TEXT NOT NULL)',
@@ -15,6 +18,7 @@ export const SQL = {
   getProfile: 'SELECT data FROM ll_profiles WHERE character_id = ?',
   listProfiles: 'SELECT data FROM ll_profiles',
   putProfile: 'INSERT INTO ll_profiles (character_id, data) VALUES (?, ?) ON CONFLICT(character_id) DO UPDATE SET data = excluded.data',
+  casProfile: 'UPDATE ll_profiles SET data = ? WHERE character_id = ? AND data = ?',
   getDoc: 'SELECT data FROM ll_documents WHERE id = ?',
   listDocs: 'SELECT data FROM ll_documents WHERE character_id = ? ORDER BY created_at DESC',
   putDoc: 'INSERT INTO ll_documents (id, character_id, day, kind, created_at, data) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data',
@@ -26,7 +30,8 @@ export const SQL = {
   putScene: 'INSERT INTO ll_scenes (id, character_id, scope_key, day, generated_at, data) VALUES (?, ?, ?, ?, ?, ?)',
   getPlan: 'SELECT * FROM ll_plans WHERE character_id = ? AND day = ?',
   listPlans: 'SELECT * FROM ll_plans WHERE character_id = ? ORDER BY day DESC LIMIT ?',
-  savePlan: 'INSERT OR REPLACE INTO ll_plans (id, character_id, day, title, mood, day_type, nodes, changes, data, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+  savePlan: `INSERT OR REPLACE INTO ll_plans (${planColumns}) VALUES (${planBindings})`,
+  insertLegacyPlan: `INSERT OR IGNORE INTO ll_plans (${planColumns}) SELECT ${planBindings} WHERE NOT EXISTS (SELECT 1 FROM ll_plans WHERE character_id = ? AND day = ?)`,
   deletePlan: 'DELETE FROM ll_plans WHERE character_id = ? AND day = ?',
   acquire: 'INSERT OR IGNORE INTO ll_locks (character_id, owner, expires_at) VALUES (?, ?, ?)',
   takeover: 'UPDATE ll_locks SET owner = ?, expires_at = ? WHERE character_id = ? AND expires_at < ?',
@@ -79,62 +84,66 @@ export function createStore(client) {
   };
   const decode = r => r.rows.map(x => JSON.parse(x.data));
 
-  async function migrateLegacyPlans(profile) {
-    if (!profile || !profile.plans || typeof profile.plans !== 'object') return;
-    const days = Object.keys(profile.plans);
-    if (!days.length) return;
-    for (const day of days) {
-      const existing = await query(SQL.getPlan, [profile.characterId, day]);
-      if (!existing.rows || !existing.rows.length) {
-        const p = profile.plans[day];
-        const pid = `${profile.characterId}-${day}`;
-        const title = p.title || '';
-        const mood = p.mood || '';
-        const dt = p.dayType ? (typeof p.dayType === 'object' ? JSON.stringify(p.dayType) : String(p.dayType)) : '';
-        const nodes = JSON.stringify(p.nodes || []);
-        const changes = JSON.stringify(p.changes || []);
-        const genAt = p.generatedAt || profile.createdAt || Date.now();
-        const planData = {
-          id: pid,
-          characterId: profile.characterId,
-          day,
-          title,
-          mood,
-          dayType: p.dayType,
-          nodes: p.nodes || [],
-          changes: p.changes || [],
-          source: p.source || 'generated',
-          generatedAt: genAt
-        };
-        await query(SQL.savePlan, [pid, profile.characterId, day, title, mood, dt, nodes, changes, JSON.stringify(planData), genAt]);
-      }
+  async function persistPlan(characterId, day, data, legacy = false) {
+    const plan = {
+      ...data,
+      id: data?.id || `${characterId}-${day}`,
+      characterId,
+      day,
+      title: data?.title || '',
+      mood: data?.mood || '',
+      nodes: data?.nodes || [],
+      changes: data?.changes || [],
+      source: data?.source || 'generated',
+      generatedAt: data?.generatedAt || Date.now()
+    };
+    const dayType = plan.dayType && typeof plan.dayType === 'object' ? JSON.stringify(plan.dayType) : String(plan.dayType || '');
+    const encoded = JSON.stringify(plan);
+    const args = [plan.id, characterId, day, plan.title, plan.mood, dayType, JSON.stringify(plan.nodes), JSON.stringify(plan.changes), encoded, plan.generatedAt];
+    if (legacy) {
+      // A concurrent writer or an earlier migration may already own this character/day.
+      await query(SQL.insertLegacyPlan, [...args, characterId, day]);
+    } else {
+      await query(SQL.savePlan, args);
     }
+    return JSON.parse(encoded);
   }
 
-  async function populateProfilePlans(profile) {
-    if (!profile) return profile;
-    if (!profile.plans || typeof profile.plans !== 'object') profile.plans = {};
-    await migrateLegacyPlans(profile);
-    const saved = (await query(SQL.listPlans, [profile.characterId, 365])).rows.map(decodePlan);
-    for (const sp of saved) {
-      if (!profile.plans[sp.day]) {
-        profile.plans[sp.day] = {
-          nodes: sp.nodes,
-          source: sp.source || 'generated'
-        };
-        if (sp.title) profile.plans[sp.day].title = sp.title;
-        if (sp.mood) profile.plans[sp.day].mood = sp.mood;
-        if (sp.dayType) profile.plans[sp.day].dayType = sp.dayType;
-        if (sp.changes?.length) profile.plans[sp.day].changes = sp.changes;
-        if (sp.generatedAt) profile.plans[sp.day].generatedAt = sp.generatedAt;
+  async function populateProfilePlans(profile, rawJson = null) {
+    const legacyEntries = Object.entries(profile.plans || {});
+    if (legacyEntries.length) {
+      for (const [day, plan] of legacyEntries) {
+        await persistPlan(profile.characterId, day, { ...plan, generatedAt: plan?.generatedAt || profile.createdAt }, true);
+      }
+      const { plans, ...dataWithoutPlans } = profile;
+      const strippedJson = JSON.stringify(dataWithoutPlans);
+      if (rawJson) {
+        const res = await query(SQL.casProfile, [strippedJson, profile.characterId, rawJson]);
+        if (!res.rowsAffected) {
+          const freshRow = (await query(SQL.getProfile, [profile.characterId])).rows[0];
+          if (freshRow) {
+            const freshData = JSON.parse(freshRow.data);
+            if (freshData.plans && Object.keys(freshData.plans).length > 0) {
+              const { plans: _, ...strippedFresh } = freshData;
+              await query(SQL.casProfile, [JSON.stringify(strippedFresh), profile.characterId, freshRow.data]);
+            }
+            profile = upgradeProfile(freshData);
+          }
+        }
       } else {
-        profile.plans[sp.day].nodes = sp.nodes;
-        if (sp.title) profile.plans[sp.day].title = sp.title;
-        if (sp.mood) profile.plans[sp.day].mood = sp.mood;
-        if (sp.dayType) profile.plans[sp.day].dayType = sp.dayType;
-        if (sp.source) profile.plans[sp.day].source = sp.source;
+        const currRow = (await query(SQL.getProfile, [profile.characterId])).rows[0];
+        if (currRow) {
+          const currData = JSON.parse(currRow.data);
+          if (currData.plans && Object.keys(currData.plans).length > 0) {
+            const { plans: _, ...strippedCurr } = currData;
+            await query(SQL.casProfile, [JSON.stringify(strippedCurr), profile.characterId, currRow.data]);
+          }
+          profile = upgradeProfile(currData);
+        }
       }
     }
+    const saved = await store.plans(profile.characterId, { limit: 365 });
+    profile.plans = Object.fromEntries(saved.map(plan => [plan.day, plan]));
     return profile;
   }
 
@@ -146,20 +155,25 @@ export function createStore(client) {
       }
     },
     async getProfile(id) {
-      const p = decode(await query(SQL.getProfile, [id]))[0];
-      if (!p) return null;
-      const upgraded = upgradeProfile(p);
-      return populateProfilePlans(upgraded);
+      const r = await query(SQL.getProfile, [id]);
+      const raw = r.rows[0];
+      if (!raw) return null;
+      const upgraded = upgradeProfile(JSON.parse(raw.data));
+      return populateProfilePlans(upgraded, raw.data);
     },
     async profiles() {
-      const list = decode(await query(SQL.listProfiles)).map(upgradeProfile);
-      for (const prof of list) {
-        await populateProfilePlans(prof);
+      const r = await query(SQL.listProfiles);
+      const list = [];
+      for (const row of r.rows) {
+        const upgraded = upgradeProfile(JSON.parse(row.data));
+        list.push(await populateProfilePlans(upgraded, row.data));
       }
       return list;
     },
     async putProfile(p) {
-      await query(SQL.putProfile, [p.characterId, JSON.stringify(p)]);
+      // Plans are hydrated for the time-line calculators and persisted separately.
+      const { plans, ...data } = p;
+      await query(SQL.putProfile, [p.characterId, JSON.stringify(data)]);
     },
     async getDoc(id) {
       const d = decode(await query(SQL.getDoc, [id]))[0];
@@ -197,36 +211,11 @@ export function createStore(client) {
       return null;
     },
     async savePlan(characterId, day, planData) {
-      let cid = characterId;
-      let d = day;
-      let data = planData;
       if (typeof characterId === 'object' && characterId !== null && !planData) {
-        data = characterId;
-        cid = data.characterId || data.character_id;
-        d = data.day;
+        const data = characterId;
+        return persistPlan(data.characterId || data.character_id, data.day, data);
       }
-      const pid = data?.id || `${cid}-${d}`;
-      const title = data?.title || '';
-      const mood = data?.mood || '';
-      const dt = data?.dayType ? (typeof data.dayType === 'object' ? JSON.stringify(data.dayType) : String(data.dayType)) : '';
-      const nodes = JSON.stringify(data?.nodes || []);
-      const changes = JSON.stringify(data?.changes || []);
-      const genAt = data?.generatedAt || Date.now();
-      const fullData = JSON.stringify({
-        ...data,
-        id: pid,
-        characterId: cid,
-        day: d,
-        title,
-        mood,
-        dayType: data?.dayType,
-        nodes: data?.nodes || [],
-        changes: data?.changes || [],
-        source: data?.source || 'generated',
-        generatedAt: genAt
-      });
-      await query(SQL.savePlan, [pid, cid, d, title, mood, dt, nodes, changes, fullData, genAt]);
-      return JSON.parse(fullData);
+      return persistPlan(characterId, day, planData);
     },
     async saveProfile(profile) {
       return store.putProfile(profile);
@@ -236,44 +225,20 @@ export function createStore(client) {
       return (r.rows || []).map(decodePlan);
     },
     async applyPlanChange(characterId, day, change) {
-      let existing = await store.getPlan(characterId, day);
-      if (!existing) {
+      return store.lock(characterId, async () => {
         const prof = await store.getProfile(characterId);
-        existing = {
-          id: `${characterId}-${day}`,
-          characterId,
-          day,
+        const existing = await store.getPlan(characterId, day) || {
           title: '日常',
           mood: '平静',
           dayType: { id: 'workday', name: '上班日' },
           nodes: templatePlan(day, prof || { settings: {} }),
-          changes: [],
-          source: 'manual',
-          generatedAt: Date.now()
+          changes: []
         };
-      }
-      const res = applyChange(existing.nodes, change, day);
-      const items = res.items || res;
-      const changeRecord = res.changeRecord;
-      existing.nodes = items;
-      if (changeRecord) {
-        existing.changes = [...(existing.changes || []), changeRecord];
-      }
-      await store.savePlan(characterId, day, existing);
-      const prof = await store.getProfile(characterId);
-      if (prof) {
-        prof.plans[day] = {
-          nodes: items,
-          changes: existing.changes,
-          title: existing.title,
-          mood: existing.mood,
-          dayType: existing.dayType,
-          source: 'manual',
-          generatedAt: Date.now()
-        };
-        await store.putProfile(prof);
-      }
-      return existing;
+        const { items, changeRecord } = applyChange(existing.nodes, change, day);
+        return store.savePlan(characterId, day, {
+          ...existing, nodes: items, changes: [...existing.changes, changeRecord], source: 'manual'
+        });
+      });
     },
     async lock(id, action) {
       const now = Date.now(), owner = `${now}-${Math.random()}`;

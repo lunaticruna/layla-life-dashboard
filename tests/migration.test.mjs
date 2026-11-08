@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
-import { createStore } from '../src/store.js';
+import { createStore, SQL } from '../src/store.js';
 import { createProfile, epoch } from '../src/core.js';
 import { templateItems } from '../src/schedule.js';
 
@@ -194,3 +194,98 @@ test('Migration R2: profiles without plans or with empty plans migrate cleanly w
 
   db.close();
 });
+
+test('R1.4 / R2: Legacy profile writes back stripped profile to prevent repeated insertLegacyPlan on subsequent reads', async () => {
+  const { db, client, store } = createMockStore();
+  await store.init();
+
+  const characterId = 'test-strip-plans';
+  await client.db.executeSql(`INSERT INTO ll_profiles (character_id, data) VALUES (?, ?)`, [
+    characterId,
+    JSON.stringify({ schema: 2, characterId, name: '测试', settings: {}, plans: { '2026-11-01': { nodes: [] } } })
+  ]);
+
+  let legacyInserts = 0;
+  const origExec = client.db.executeSql;
+  client.db.executeSql = async (q, args) => {
+    if (q.includes('insertLegacyPlan') || q.includes('INSERT OR IGNORE INTO ll_plans')) legacyInserts++;
+    return origExec(q, args);
+  };
+
+  // First read triggers migration and persists stripped profile
+  await store.getProfile(characterId);
+  assert.equal(legacyInserts, 1);
+
+  // Subsequent read must NOT trigger insertLegacyPlan because plans was stripped in ll_profiles
+  legacyInserts = 0;
+  await store.getProfile(characterId);
+  assert.equal(legacyInserts, 0);
+
+  // Check ll_profiles table in DB directly
+  const row = db.prepare('SELECT data FROM ll_profiles WHERE character_id = ?').get(characterId);
+  const parsed = JSON.parse(row.data);
+  assert.equal(parsed.plans, undefined);
+
+  db.close();
+});
+
+test('R1.3 / R2: getProfile CAS concurrency protection: concurrent saveSettings modifying autoPlan is never overwritten by legacy migration', async () => {
+  const { db, client, store } = createMockStore();
+  await store.init();
+
+  const characterId = 'char-cas-concurrency';
+  const legacyProfile = {
+    schema: 2,
+    characterId,
+    name: '测试角色',
+    settings: { timezone: 'Asia/Shanghai', autoPlan: false },
+    plans: {
+      '2026-11-01': {
+        title: '历史日程',
+        mood: '平静',
+        source: 'generated',
+        nodes: templateItems('workday')
+      }
+    }
+  };
+  await client.db.executeSql(`INSERT INTO ll_profiles (character_id, data) VALUES (?, ?)`, [
+    characterId,
+    JSON.stringify(legacyProfile)
+  ]);
+
+  let concurrentUpdateTriggered = false;
+  const origExec = client.db.executeSql;
+  client.db.executeSql = async (q, args) => {
+    // Intercept when insertLegacyPlan runs during populateProfilePlans
+    if (!concurrentUpdateTriggered && (q.includes('insertLegacyPlan') || q.includes('INSERT OR IGNORE INTO ll_plans'))) {
+      concurrentUpdateTriggered = true;
+      // Concurrent saveSettings write modifies autoPlan to true
+      const concurrentProfile = {
+        ...legacyProfile,
+        schema: 3,
+        settings: { ...legacyProfile.settings, autoPlan: true }
+      };
+      delete concurrentProfile.plans;
+      await origExec(SQL.putProfile, [characterId, JSON.stringify(concurrentProfile)]);
+    }
+    return origExec(q, args);
+  };
+
+  const loadedProfile = await store.getProfile(characterId);
+
+  // Assertions:
+  assert.equal(concurrentUpdateTriggered, true, 'Concurrent write should have been triggered during migration');
+  assert.equal(loadedProfile.settings.autoPlan, true, 'getProfile must return profile with autoPlan: true');
+
+  const row = db.prepare('SELECT data FROM ll_profiles WHERE character_id = ?').get(characterId);
+  const dbProfile = JSON.parse(row.data);
+  assert.equal(dbProfile.settings.autoPlan, true, 'Database ll_profiles must retain autoPlan: true and not be overwritten');
+  assert.equal(dbProfile.plans, undefined, 'll_profiles must have plans stripped');
+
+  const plan = await store.getPlan(characterId, '2026-11-01');
+  assert.ok(plan, 'Legacy plan must be migrated into ll_plans');
+  assert.equal(plan.title, '历史日程');
+
+  db.close();
+});
+

@@ -921,4 +921,81 @@ test('export: schedule extraction extracts timelineFacts and falls back to body 
   assert.equal(extracted.dailyFacts['2026-11-01'].wakePhrase, '07:45起身');
   assert.equal(extracted.dailyFacts['2026-11-02'].wakeTime, '08:30');
   assert.equal(extracted.dailyFacts['2026-11-02'].wakePhrase, '08:30 起床');
+
+  const day = '2026-11-02', role = { id: 'test-role', data: { data: { name: '澪' } } };
+  const saved = createProfile(role, epoch(day, 600));
+  saved.wakeRecords[day] = { at: epoch(day, 524) };
+  const confirmed = extractScheduleAndTimelineFacts(saved, docs, { now: epoch(day, 600) }).dailyFacts[day];
+  assert.equal(confirmed.plannedWakeTime, '08:00');
+  assert.equal(confirmed.firstAwakeTime, '');
+  assert.equal(confirmed.wakeTime, '08:44');
+  assert.equal(confirmed.wakeSource, 'manual');
+});
+
+test('R1.4 / R2: Non-destructive field merge in extractScheduleAndTimelineFacts preserves archived facts & satisfies EXPORT_FORMAT_SPEC.md', () => {
+  const day = '2026-11-01';
+  const profile = {
+    characterId: 'char-1',
+    settings: { timezone: 'Asia/Shanghai', sleepStart: '23:30', sleepEnd: '08:00', home: '宿舍' },
+    plans: {},
+    wakeRecords: { [day]: { at: epoch(day, 524, 'Asia/Shanghai'), timezone: 'Asia/Shanghai' } } // 08:44
+  };
+  const archivedItems = [
+    { time: '07:30', until: '08:00', summary: '晨起散步', location: '公园', phase: 'awake' },
+    { time: '08:00', until: '08:30', summary: '享用早餐', location: '餐厅', phase: 'awake' }
+  ];
+  const docs = [{
+    day,
+    kind: 'diary',
+    title: '十一月第一天',
+    summary: '今日晨起散步并用早餐。',
+    timelineFacts: {
+      day,
+      characterId: 'char-1',
+      plannedSleepStart: '23:00',
+      plannedWakeTime: '07:30',
+      wakeTime: '07:30',
+      wakePhrase: '07:30起床',
+      wakeSource: 'diary',
+      wakeSummary: '07:30日记记录',
+      firstAwakeTime: '07:30',
+      timelineItems: archivedItems,
+      todayDiaryTitle: '十一月第一天',
+      todayDiarySummary: '今日晨起散步并用早餐。',
+      todayDreamTitle: '',
+      todayDreamSummary: ''
+    }
+  }];
+
+  const result = extractScheduleAndTimelineFacts(profile, docs, { scenes: [], now: epoch(day, 600, 'Asia/Shanghai') });
+  const fact = result.dailyFacts[day];
+
+  // Confirmed wake time updates wake facts
+  assert.equal(fact.wakeTime, '08:44');
+  assert.equal(fact.wakeSource, 'manual');
+  assert.equal(fact.wakePhrase, '08:44起床');
+
+  // Preserved from archived document timelineFacts!
+  assert.equal(fact.plannedWakeTime, '07:30');
+  assert.equal(fact.plannedSleepStart, '23:00');
+  assert.equal(fact.firstAwakeTime, '07:30');
+  assert.deepEqual(fact.timelineItems, archivedItems);
+  assert.equal(fact.todayDiaryTitle, '十一月第一天');
+  assert.equal(fact.todayDiarySummary, '今日晨起散步并用早餐。');
+
+  // Schema compliance with EXPORT_FORMAT_SPEC.md §4.3
+  const requiredKeys = [
+    'day', 'plannedSleepStart', 'plannedWakeTime', 'wakeTime', 'wakePhrase',
+    'wakeSource', 'wakeSummary', 'firstAwakeTime', 'timelineItems',
+    'todayDiaryTitle', 'todayDiarySummary', 'todayDreamTitle', 'todayDreamSummary'
+  ];
+  for (const k of requiredKeys) {
+    assert.ok(k in fact, `Missing required DailyFact field: ${k}`);
+  }
+  assert.ok(['manual', 'diary', 'scene', 'sleeping', 'schedule'].includes(fact.wakeSource));
+  assert.ok(Array.isArray(fact.timelineItems) && fact.timelineItems.length <= 6);
+  for (const item of fact.timelineItems) {
+    assert.ok(item.time && item.until && item.summary && item.location && item.phase);
+    assert.ok(['awake', 'falling_asleep', 'light_sleep', 'deep_sleep', 'woken'].includes(item.phase));
+  }
 });

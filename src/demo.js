@@ -113,6 +113,13 @@ export function createMockSQL(initial, storage = null) {
     if (query === SQL.getProfile) rows = data.profiles[args[0]] ? [{ data: JSON.stringify(data.profiles[args[0]]) }] : [];
     else if (query === SQL.listProfiles) rows = Object.values(data.profiles).map(p => ({ data: JSON.stringify(p) }));
     else if (query === SQL.putProfile) { data.profiles[args[0]] = JSON.parse(args[1]); changed = 1; }
+    else if (query === SQL.casProfile) {
+      const current = data.profiles[args[1]];
+      if (current && JSON.stringify(current) === args[2]) {
+        data.profiles[args[1]] = JSON.parse(args[0]);
+        changed = 1;
+      }
+    }
     else if (query === SQL.getDoc) rows = data.documents[args[0]] ? [{ data: JSON.stringify(data.documents[args[0]]) }] : [];
     else if (query === SQL.listDocs) rows = Object.values(data.documents).filter(d => d.characterId === args[0]).sort((a, b) => b.createdAt - a.createdAt).map(d => ({ data: JSON.stringify(d) }));
     else if (query === SQL.putDoc) { data.documents[args[0]] = JSON.parse(args[5]); changed = 1; }
@@ -124,7 +131,13 @@ export function createMockSQL(initial, storage = null) {
     else if (query === SQL.listScenes) rows = Object.values(data.scenes).reverse().filter(r => r.characterId === args[0] && r.generatedAt <= args[1]).sort((a, b) => b.generatedAt - a.generatedAt).slice(0, args[2]).map(r => ({ data: JSON.stringify(r) }));
     else if (query === SQL.getPlan) rows = data.plans[`${args[0]}-${args[1]}`] ? [data.plans[`${args[0]}-${args[1]}`]] : [];
     else if (query === SQL.listPlans) rows = Object.values(data.plans).filter(p => p.character_id === args[0]).sort((a, b) => b.day.localeCompare(a.day)).slice(0, args[1]);
-    else if (query === SQL.savePlan) { data.plans[`${args[1]}-${args[2]}`] = { id: args[0], character_id: args[1], day: args[2], title: args[3], mood: args[4], day_type: args[5], nodes: args[6], changes: args[7], data: args[8], generated_at: args[9] }; changed = 1; }
+    else if (query === SQL.savePlan || query === SQL.insertLegacyPlan) {
+      const key = `${args[1]}-${args[2]}`;
+      if (query === SQL.savePlan || !data.plans[key]) {
+        data.plans[key] = { id: args[0], character_id: args[1], day: args[2], title: args[3], mood: args[4], day_type: args[5], nodes: args[6], changes: args[7], data: args[8], generated_at: args[9] };
+        changed = 1;
+      }
+    }
     else if (query === SQL.deletePlan) { if (data.plans[`${args[0]}-${args[1]}`]) { delete data.plans[`${args[0]}-${args[1]}`]; changed = 1; } }
     else if (query === SQL.acquire) { if (!data.locks[args[0]]) { data.locks[args[0]] = { owner: args[1], expires: args[2] }; changed = 1; } }
     else if (query === SQL.takeover) { if (data.locks[args[2]]?.expires < args[3]) { data.locks[args[2]] = { owner: args[0], expires: args[1] }; changed = 1; } }

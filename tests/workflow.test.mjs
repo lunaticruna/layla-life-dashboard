@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { createStore } from '../src/store.js';
-import { createProfile, documentId, epoch, memoryPayload } from '../src/core.js';
-import { readTriples } from '../src/memory-graph.js';
-import { generateCurrentScene, generateDocument, generatePlan, runBackground, syncCharacterCard, writeMemory } from '../src/workflow.js';
+import { createProfile, documentId, epoch, memoryPayload, templatePlan } from '../src/core.js';
+import { buildGraph, graphContext, readTriples } from '../src/memory-graph.js';
+import { generateCurrentScene, generateDocument, generatePlan, recordWakeTime, runBackground, saveManualPlan, syncCharacterCard, writeMemory } from '../src/workflow.js';
 
 const character = { id: 'a', data: { spec: 'chara_card_v2', spec_version: '2.0', data: { name: '甲', description: '角色', personality: '', scenario: '', post_history_instructions: '' } } };
 const now = epoch('2026-11-01', 22 * 60);
@@ -61,9 +61,30 @@ test('document generation is once per day and filters generated memory evidence'
   assert.equal(context.memories.length, 1); assert.equal(context.memories[0].text, '真实原生记忆'); f.db.close();
 });
 test('invalid model schedule preserves existing plan and unlocks the role', async () => {
-  const f = fixture(); await f.store.init(); const p = createProfile(character, now); p.plans['2026-11-01'] = { source: 'manual', nodes: [] }; await f.store.putProfile(p);
+  const f = fixture(); await f.store.init(); await f.store.putProfile(createProfile(character, now));
+  await f.store.savePlan(character.id, '2026-11-01', { source: 'manual', nodes: [] });
   await assert.rejects(generatePlan(f.client, f.store, character, { now }), /节点/);
   assert.equal((await f.store.getProfile('a')).plans['2026-11-01'].source, 'manual'); await f.store.lock('a', async () => {}); f.db.close();
+});
+test('manual editor replaces an existing plan in the table and profile saves cannot roll it back', async t => {
+  const f = fixture(), day = '2026-11-01';
+  t.after(() => f.db.close());
+  await f.store.init();
+  const p = createProfile(f.role, now), nodes = templatePlan(day, p);
+  await f.store.putProfile(p);
+  await f.store.savePlan(f.role.id, day, { title: '既有日程', nodes, source: 'generated', changes: [{ note: '已有调整' }] });
+  const stale = await f.store.getProfile(f.role.id);
+  const edited = nodes.map(node => node.start <= 1320 && 1320 < node.end ? { ...node, summary: '编辑后的晚间安排' } : node);
+  const saved = await saveManualPlan(f.client, f.store, f.role, day, edited, { now });
+  assert.equal(saved.source, 'manual');
+  assert.equal(saved.title, '既有日程');
+  assert.deepEqual(saved.changes, [{ note: '已有调整' }]);
+  assert.match(f.role.data.data.post_history_instructions, /编辑后的晚间安排/);
+  await f.store.putProfile(stale);
+  assert.deepEqual((await f.store.getProfile(f.role.id)).plans[day], saved);
+  const row = f.db.prepare('SELECT data FROM ll_profiles WHERE character_id = ?').get(f.role.id);
+  assert.equal(JSON.parse(row.data).plans, undefined);
+  assert.equal((await f.store.plans(f.role.id)).length, 1);
 });
 test('background is opt-in and produces at most one document without implicit native writes', async () => {
   const f = fixture(); await f.store.init(); const p = createProfile(character, now - 10000); await f.store.putProfile(p);
@@ -95,12 +116,14 @@ test('scheme 1 card sync and scheme 2 LTM graph align on 08:44 wake-up and clean
   const sc = await generateCurrentScene(f.client, f.store, f.role, { now: morning });
   const identityBefore = sc.profile.sceneIdentity;
   assert.ok(f.role.data.data.post_history_instructions.startsWith('保持既有角色口吻。'));
-  assert.match(f.role.data.data.post_history_instructions, /08:44/);
+  assert.match(f.role.data.data.post_history_instructions, /首个清醒片段 08:44；实际起床时间未确认/);
+  await recordWakeTime(f.client, f.store, f.role, '2026-11-01', '08:44', { now: morning });
 
   f.setDoc({ title: '晨起读书', body: '今天早上8:44起床，简单吃过早饭后整理了窗边的读书笔记。', summary: '早上8:44起床，整理了窗边的读书笔记。' });
   const diary = await generateDocument(f.client, f.store, f.role, 'diary', { now });
   const diaryPrompt = JSON.parse(f.requests.find(r => r.messages[0].content.includes('TASK:DIARY')).messages[1].content);
   assert.equal(diaryPrompt.timelineAnchors.firstRecordedAwakeTime, '08:44');
+  assert.equal(diaryPrompt.timelineAnchors.confirmedWakeTime, '08:44');
   assert.equal((await f.store.getProfile('a')).sceneIdentity, identityBefore);
   assert.match(f.role.data.data.post_history_instructions, /早上8:44起床/);
 
@@ -116,8 +139,47 @@ test('scheme 1 card sync and scheme 2 LTM graph align on 08:44 wake-up and clean
   f.db.close();
 });
 
+test('unconfirmed and conflicting wake claims do not discard diary and cannot enter 1-hop attributes or memory wake tags', async t => {
+  const f = fixture(), day = '2026-11-01';
+  t.after(() => f.db.close());
+  await f.store.init();
+  await f.store.putProfile(createProfile(f.role, now));
+  f.setDoc({ title: '早晨', body: '十点多才从被子里爬出来。', summary: '整理了桌上的书。' });
+  const opts = { now, generateScene: false };
+  // Tolerates unconfirmed wake phrasing without throwing hard error
+  const unconfirmedDoc = await generateDocument(f.client, f.store, f.role, 'diary', opts);
+  assert.ok(unconfirmedDoc);
+  assert.equal(unconfirmedDoc.timelineFacts.wakeTime, '');
+  assert.notEqual(unconfirmedDoc.timelineFacts.wakeSource, 'manual');
+  // Unconfirmed wake does not enter memoryPayload wakeTag
+  const p1 = memoryPayload(unconfirmedDoc);
+  assert.doesNotMatch(p1.summary, /已确认.*起床/);
+
+  await assert.rejects(recordWakeTime(f.client, f.store, f.role, day, '23:00', opts), /已经过去/);
+  await recordWakeTime(f.client, f.store, f.role, day, '08:44', opts);
+  f.setDoc({ title: '记录', body: '早上8:44起床。后来读了几页书。', summary: '早上8:44起床，之后看了一会儿书。' });
+  const diary = await generateDocument(f.client, f.store, f.role, 'diary', { ...opts, force: true });
+  assert.equal(diary.timelineFacts.wakeTime, '08:44');
+  assert.equal(diary.timelineFacts.wakeSource, 'manual');
+
+  // Conflicting unconfirmed wake claim does not crash generateDocument, but is blocked from 1-hop attributes
+  f.setDoc({ title: '又一篇', body: '8:44起床。10:00起床。', summary: '看了一会儿书。' });
+  const regenerated = await generateDocument(f.client, f.store, f.role, 'diary', { ...opts, force: true });
+  assert.ok(regenerated);
+  const gCtx = graphContext(regenerated, { rawText: regenerated.body, summary: regenerated.summary }, f.role.data.data.name);
+  const graph = JSON.parse(buildGraph(JSON.stringify([{ subject: gCtx.recordNode, relationship: '记录中作息', object: '10:00起床' }]), gCtx, regenerated));
+  const directAttrs = graph.filter(tr => tr.subject === f.role.data.data.name);
+  assert.ok(!directAttrs.some(tr => tr.object.includes('10:00')));
+
+  await recordWakeTime(f.client, f.store, f.role, day, '', opts);
+  assert.match(f.role.data.data.post_history_instructions, /实际起床时间未确认/);
+  assert.doesNotMatch(f.role.data.data.post_history_instructions, /8:44起床/);
+  assert.equal(f.memories.length, 0);
+});
+
 test('forced same-day diary regeneration updates existing native memory in place without duplicate rows', async () => {
   const f = fixture(); await f.store.init(); await f.store.putProfile(createProfile(f.role, now - 3600000));
+  await recordWakeTime(f.client, f.store, f.role, '2026-11-01', '08:44', { now: now - 1800000 });
   f.setDoc({ title: '初版日记', body: '早上8:44起床，上午在家看书。', summary: '早上8:44起床，上午看书。' });
   const first = await generateDocument(f.client, f.store, f.role, 'diary', { now: now - 1800000 });
   const written = await writeMemory(f.client, f.store, first.id);
@@ -137,3 +199,154 @@ test('forced same-day diary regeneration updates existing native memory in place
   assert.match(f.memories[0].summary, /整理了书架/);
   f.db.close();
 });
+
+test('R1.1 / R2: runBackground wraps document generation in try/catch, sets cooldown, and reports notice on failure', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.diaryHour = 21; // earlier than now (22:00)
+  await f.store.putProfile(p);
+
+  // Force document generation to fail by throwing in client completion when generating diary
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:DIARY')) {
+      throw new Error('LLM connection reset');
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+  assert.match(res.message, /文稿生成或写入异常/);
+
+  // Profile cooldown state was set
+  const savedProfile = await f.store.getProfile(f.role.id);
+  assert.equal(savedProfile.state.documentAttemptAt, now);
+
+  // Error run was recorded in store
+  const rows = f.db.prepare('SELECT data FROM ll_runs WHERE character_id = ?').all(f.role.id);
+  const runs = rows.map(r => JSON.parse(r.data));
+  const errorRun = runs.find(r => r.status === 'error' && r.kind === 'diary');
+  assert.ok(errorRun);
+  assert.match(errorRun.message, /LLM connection reset/);
+
+  f.db.close();
+});
+
+test('R1.1 / R2: runBackground tomorrow plan pregeneration failure records notice', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.autoPlan = true;
+  p.settings.planAheadHour = 20; // 20:00, now is 22:00
+  p.settings.diaryHour = 23; // later than now, so no diary attempt
+  await f.store.putProfile(p);
+
+  // Force plan generation to fail
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:PLAN') || req.messages[0].content.includes('TASK:SCHEDULE')) {
+      throw new Error('Plan generation timeout');
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+  assert.match(res.message, /次日日程暂未生成/);
+
+  f.db.close();
+});
+
+test('R1.4 / R2: runBackground document exception safely merges latest profile and retains tomorrowAttemptAt retry cooldown', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.autoPlan = true;
+  p.settings.planAheadHour = 20; // 20:00, now is 22:00 -> triggers preGenerate plan
+  p.settings.diaryHour = 21; // 21:00, now is 22:00 -> triggers diary generation
+  await f.store.putProfile(p);
+
+  // Force both preGenerate plan and diary generation to fail
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:PLAN') || req.messages[0].content.includes('TASK:SCHEDULE')) {
+      throw new Error('LLM plan generation failed');
+    }
+    if (req.messages[0].content.includes('TASK:DIARY')) {
+      throw new Error('LLM diary generation failed');
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+
+  const savedProfile = await f.store.getProfile(f.role.id);
+
+  // Both retry cooldown timestamps must be recorded and neither overwritten
+  assert.equal(savedProfile.state.tomorrowAttemptAt, now, 'tomorrowAttemptAt cooldown must be preserved');
+  assert.equal(savedProfile.state.documentAttemptAt, now, 'documentAttemptAt cooldown must be recorded');
+
+  assert.match(res.message, /次日日程暂未生成/);
+  assert.match(res.message, /文稿生成或写入异常/);
+
+  f.db.close();
+});
+
+test('R1.1 / R2: runBackground autoWrite fails due to strict wake interception, keeping draft and clean error notice', async () => {
+  const f = fixture();
+  await f.store.init();
+  const p = createProfile(f.role, now);
+  p.settings.background = true;
+  p.settings.autoPlan = false;
+  p.settings.autoWrite = true; // autoWrite enabled
+  p.settings.diaryHour = 21; // 21:00, now is 22:00 -> triggers diary generation
+  await f.store.putProfile(p);
+
+  // LLM generates a diary containing unconfirmed wake time (e.g. 09:30起床)
+  const origCreate = f.client.chat.completions.create;
+  f.client.chat.completions.create = async req => {
+    if (req.messages[0].content.includes('TASK:DIARY')) {
+      return {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              title: '晨光与整理',
+              body: '今天09:30起床，整理了书桌并阅读了书籍。',
+              summary: '09:30起床，整理书桌阅读。'
+            })
+          }
+        }]
+      };
+    }
+    return origCreate(req);
+  };
+
+  const res = await runBackground(f.client, f.store, { now });
+  assert.equal(res.status, 'ok');
+
+  // Verify native write was blocked (0 native memories created)
+  assert.equal(f.creates, 0, 'No native memory write should have occurred');
+
+  // Verify draft document was preserved in local store
+  const docs = await f.store.docs(f.role.id);
+  const diaryDoc = docs.find(d => d.kind === 'diary');
+  assert.ok(diaryDoc, 'Local diary draft must be preserved');
+  assert.equal(diaryDoc.syncStatus, 'pending', 'Draft syncStatus must remain pending');
+
+  // Verify run record and notice describe the interception clearly
+  assert.match(res.message, /文稿生成或写入异常：文稿包含未确认或冲突的起床时间/);
+
+  const runs = (await f.store.runs(f.role.id)).map(r => r.data || r);
+  const errRun = runs.find(r => r.status === 'error' && r.kind === 'diary');
+  assert.ok(errRun);
+  assert.match(errRun.message, /严格拦截写入原生记忆/);
+
+  f.db.close();
+});
+

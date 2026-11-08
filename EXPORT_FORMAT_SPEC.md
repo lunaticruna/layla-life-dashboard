@@ -276,6 +276,10 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `profile.plans[day].nodes[].location`| `string` | **REQUIRED** | 1–80 字符 | 节点活动发生地点。 | Location |
 | `profile.plans[day].nodes[].scene` | `string` | **REQUIRED** | 0–500 字符 | 节点附带的静态预设场景描述（可为空串）。 | Static Scene Prompt |
 | `profile.plans[day].nodes[].source` | `string` | **REQUIRED** | `"template"` \| `"generated"` \| `"manual"` | 节点来源。 | Provenance |
+| `profile.wakeRecords` | `object` | OPTIONAL | 键为生活时区日期 `YYYY-MM-DD` | 每日手动确认的起床记录。 | Temporal Provenance |
+| `profile.wakeRecords[day].at` | `integer` | REQUIRED if present | Unix 毫秒 | 起床时刻。 | Confirmed Wake Time |
+| `profile.wakeRecords[day].recordedAt` | `integer` | REQUIRED if present | Unix 毫秒 | 确认记录的写入时刻。 | Recorded Time |
+| `profile.wakeRecords[day].timezone` | `string` | REQUIRED if present | IANA 时区 | 输入起床时刻时使用的生活时区。 | Source Timezone |
 | `profile.cardSync.hash` | `string` | **REQUIRED** | 哈希字符串或空串 | 最近一次同步到角色卡的文本哈希值（用于幂等比对）。 | Sync Hash |
 | `profile.cardSync.syncedAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 ($\ge 0$) | 最近一次成功写入角色卡的时间戳。 | Sync Timestamp |
 | `profile.cardSync.day` | `string` | **REQUIRED** | `"YYYY-MM-DD"` 或空串 | 同步内容对应的自然日期。 | Sync Date |
@@ -295,9 +299,9 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `[].characterId` | `string` | **REQUIRED** | 1–128 字符 | 事实归属的角色 ID。 | `agent_id` |
 | `[].plannedSleepStart` | `string` | **REQUIRED** | `"HH:MM"` | 当日规划的就寝时间。 | Planned Sleep Time |
 | `[].plannedWakeTime` | `string` | **REQUIRED** | `"HH:MM"` | 当日规划的早晨起床时间。 | Planned Wake Time |
-| `[].wakeTime` | `string` | **REQUIRED** | `"HH:MM"` 或空串 | 结算出的实际确凿起床时间（如 `"08:15"`）。 | Zep: Temporal Wake Fact<br>Letta: Core Fact |
+| `[].wakeTime` | `string` | **REQUIRED** | `"HH:MM"` 或空串 | 新记录只在手动确认后填入起床时间。旧文稿可保留其归档时记载的时间。 | Zep: Temporal Wake Fact<br>Letta: Core Fact |
 | `[].wakePhrase` | `string` | **REQUIRED** | 字符串 (如 `"08:15起身"`) | 起床判定的原始短语或证据。 | Grounding Evidence |
-| `[].wakeSource` | `string` | **REQUIRED** | `"diary"` \| `"scene"` \| `"sleeping"` \| `"schedule"` | 起床时间的证据来源（日记自述、场景记录、仍处于睡眠、作息规划推算）。 | Fact Provenance |
+| `[].wakeSource` | `string` | **REQUIRED** | `"manual"` \| `"diary"` \| `"scene"` \| `"sleeping"` \| `"schedule"` | `manual` 表示手动确认。其余值标记可用的参考来源或旧文稿的归档来源。 | Fact Provenance |
 | `[].wakeSummary` | `string` | **REQUIRED** | 详细说明字符串 | 人类可读的起床与作息事实长句，直接用于向角色卡或 Core Memory 交代作息。 | Core Memory Fact Fragment |
 | `[].firstAwakeTime` | `string` | **REQUIRED** | `"HH:MM"` 或空串 | 当日首个记录到的清醒微观场景时刻。 | Temporal Anchor |
 | `[].timelineItems[]` | `array<object>` | **REQUIRED** | 最多 6 条近期时间线 | 当日已发生的关键节点时间线概览。 | Episodic Timeline |
@@ -361,17 +365,47 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
 | `[].title` | `string` | **REQUIRED** | 1–160 字符 | 文稿标题。 | Title / Header |
 | `[].body` | `string` | **REQUIRED** | 1–16000 字符 | 文稿完整正文 Markdown 文本。 | Mem0: `content`<br>Letta: Archival Passage<br>Zep: Document Body |
 | `[].summary` | `string` | **REQUIRED** | 1–1200 字符 | 文稿浓缩摘要（含时间锚点与生活核心动作）。 | Semantic Summary / Index |
-| `[].createdAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 | 文稿生成并落库的时刻。 | `created_at` |
-| `[].syncStatus` | `string` | **REQUIRED** | `"pending"` \| `"writing"` \| `"written"` \| `"failed"` \| `"stale"` | 交还 Layla 宿主原生记忆库的状态。 | Sync Lifecycle State |
+| `[].createdAt` | `integer` | **REQUIRED** | Unix 毫秒时间戳 | 文稿首次生成并落库的时刻。 | `created_at` |
+| `[].updatedAt` | `integer` | **OPTIONAL** | Unix 毫秒时间戳 | 文稿最近一次重新整理或内容更新的时刻。 | `updated_at` |
+| `[].syncStatus` | `string` | **REQUIRED** | `"pending"` \| `"sending"` \| `"uncertain"` \| `"written"` \| `"stale"`（兼容旧档 `"writing"` \| `"failed"`） | 交还或原位更新 Layla 宿主原生记忆库的状态（`pending` 待首次交还；`sending` 发送中；`uncertain` 待核对回执或版本；`written` 已确认写入当前版本；`stale` 已重新整理待原位更新原记忆）。 | Sync Lifecycle State |
+| `[].syncError` | `string` | **OPTIONAL** | 字符串（正常或已写入时为空串 `""`） | 最近一次交还、原位更新或只读核对发现的错误说明或本地/原生版本差异提示。 | Sync Diagnostic Message |
+| `[].pendingWrite` | `object` \| `null` | **OPTIONAL** | 见下方叶子字段定义；已确认 `written` 或尚未发起写入时为 `null` | 进入原生创建或原位更新前持久化的预期写入载荷快照，用于在回执丢失、落库前中断或应用重启后执行确定性只读版本对账。 | Durable Write-Ahead Intent |
+| `[].pendingWrite.op` | `string` | REQUIRED if `pendingWrite` present | `"create"` \| `"update"` | 本次待核对写入的操作意图（首次新建或按原记忆 ID 原位更新）。 | Write Operation Type |
+| `[].pendingWrite.targetMemoryId` | `integer` \| `null` | REQUIRED if `pendingWrite` present | 正整数（`update`）或 `null`（`create`） | 原位更新锁定的目标宿主记忆主键 ID。 | Target Host Memory ID |
+| `[].pendingWrite.rawText` | `string` | REQUIRED if `pendingWrite` present | 含 `【Layla生活记录:<id>】` 标记的完整文本 | 本次待写入宿主记忆的预期 `rawText` 全文载荷。 | Expected Native `rawText` |
+| `[].pendingWrite.summary` | `string` | REQUIRED if `pendingWrite` present | 字符串 | 本次待写入宿主记忆的预期 `summary` 摘要载荷。 | Expected Native `summary` |
+| `[].pendingWrite.payloadHash` | `string` | REQUIRED if `pendingWrite` present | 36 进制 FNV-1a 哈希字符串 | `[rawText, summary]` 序列化后的确定性载荷摘要哈希，用于快速完整性校验。 | Payload Digest |
+| `[].pendingWrite.graphJSON` | `string` \| `null` | REQUIRED if `pendingWrite` present | JSON 字符串或 `null` | 随本次写入一并提交的预期知识图谱三元组 JSON 载荷。 | Expected Graph Payload |
+| `[].pendingWrite.previousBasis` | `string` \| `null` | REQUIRED if `pendingWrite` present | JSON 数组字符串或 `null` | 原位更新前读取到的宿主旧版记忆基准签名（`[id, character_id, session_id, timestamp, rawText, summary]`），用于区分“落库前中断保留旧版 A”与“外部第三方改动”。 | Pre-Update Native Basis |
+| `[].pendingWrite.previousGraphJSON` | `string` \| `null` | REQUIRED if `pendingWrite` present | JSON 字符串或 `null` | 原位更新前宿主旧版记忆持有的 `knowledgeGraphJSON`，用于防止旧版图谱被误认为新版图谱。 | Pre-Update Native Graph |
+| `[].pendingWrite.attemptedAt` | `integer` | REQUIRED if `pendingWrite` present | Unix 毫秒时间戳 | 持久化本次待写记录并发起宿主写入尝试的时刻。 | Attempt Timestamp |
 | `[].memoryId` | `integer` \| `null`| **REQUIRED** | 正整数或 `null` | 成功交还写入 Layla 原生记忆后的 ID，未交还时必须为 `null`。 | Host Foreign Key |
+| `[].nativeTimestamp` | `integer` | **OPTIONAL** | Unix 毫秒时间戳 | 对应宿主原生记忆记录的 `timestamp` 时间锚点（用于窄时间窗精确回读）。 | Host Memory Timestamp |
+| `[].syncedAt` | `integer` | **OPTIONAL** | Unix 毫秒时间戳 | 最近一次确认宿主原生记忆写入或原位更新成功的时刻。 | Synced Timestamp |
+| `[].memoryPipelineVersion` | `string` | **OPTIONAL** | SemVer（如 `"0.3.0"`） | 执行原生记忆写入或图谱补全时的记忆管线版本号。 | Pipeline Version |
 | `[].graphStatus` | `string` | **REQUIRED** | `"pending"` \| `"missing"` \| `"generating"` \| `"draft"` \| `"writing"` \| `"uncertain"` \| `"error"` \| `"ready"` | 知识图谱抽取与原生图谱核对状态。 | Knowledge Graph Pipeline State |
 | `[].graphDraftJSON` | `string` \| `null`| **OPTIONAL** | JSON 字符串或 `null` | 暂存的图谱三元组中间草稿 JSON 文本。 | Graph Draft Buffer |
+| `[].graphDraftBasis` | `string` \| `null` | **OPTIONAL** | JSON 数组字符串或 `null` | 生成 `graphDraftJSON` 时所依据的记忆载荷基准签名。 | Graph Draft Basis |
+| `[].graphGeneratedAt` | `integer` | **OPTIONAL** | Unix 毫秒时间戳 | 生成 `graphDraftJSON` 草稿的时刻。 | Graph Draft Timestamp |
+| `[].graphError` | `string` | **OPTIONAL** | 字符串（正常时为空串 `""`） | 图谱抽取、写入或回读核对未完成时的诊断说明。 | Graph Diagnostic Message |
+| `[].graphVerifiedJSON` | `string` \| `null` | **OPTIONAL** | JSON 字符串或 `null` | 已从宿主原生记忆回读核对一致的知识图谱三元组 JSON 文本。 | Verified Graph Payload |
+| `[].graphVerifiedAt` | `integer` | **OPTIONAL** | Unix 毫秒时间戳 | 完成原生知识图谱回读核对的时刻。 | Graph Verified Timestamp |
+| `[].graphBasis` | `string` \| `null` | **OPTIONAL** | JSON 数组字符串或 `null` | 完成图谱核对时对应的宿主记忆基准签名。 | Verified Graph Basis |
 | `[].retrievalStatus` | `string` | **REQUIRED** | `"unverified"` \| `"passed"` \| `"failed"` | 用户在真机交互中对该记忆的召回验收状态。 | Verification Status |
 | `[].retrievalNote` | `string` | **OPTIONAL** | 字符串 (未验收时为空串) | 用户填写的真机召回验收评测详细报告。 | Human Audit Log |
-| `[].retrievalAt` | `integer` \| `null`| **OPTIONAL** | Unix 毫秒时间戳或 `null` | 执行召回验收的时刻。 | Verified At |
+| `[].retrievalAt` | `integer` \| `null`| **OPTIONAL** | Unix 毫秒时间戳或 `null` | 执行召回验收的时刻（兼容旧版字段名）。 | Verified At |
+| `[].retrievalCheckedAt` | `integer` \| `null` | **OPTIONAL** | Unix 毫秒时间戳或 `null` | 最近一次记录用户真机召回验收结果的时刻。 | Checked Timestamp |
+| `[].retrievalCheck` | `object` \| `null` | **OPTIONAL** | 见下方叶子字段定义或 `null` | 最近一次用户真机召回验收的结构化记录。 | Latest Retrieval Report |
+| `[].retrievalCheck.result` | `string` | REQUIRED if `retrievalCheck` present | `"unverified"` \| `"passed"` \| `"failed"` | 本次真机召回验收结论。 | Report Result |
+| `[].retrievalCheck.cleanSession` | `boolean` | REQUIRED if `retrievalCheck` present | `true` \| `false` | 用户确认是否在未贴原文的干净新会话中完成测试。 | Clean Session Flag |
+| `[].retrievalCheck.note` | `string` | REQUIRED if `retrievalCheck` present | 0–1000 字符 | 用户填写的测试问法与召回表现备注。 | Report Note |
+| `[].retrievalCheck.source` | `string` | REQUIRED if `retrievalCheck` present | 固定为 `"user-report"` | 验收结论来源标记（仅限人工报告，禁止程序自动推断）。 | Report Source |
+| `[].retrievalCheck.at` | `integer` | REQUIRED if `retrievalCheck` present | Unix 毫秒时间戳 | 该条验收报告的记录时刻。 | Report Timestamp |
+| `[].retrievalChecks[]` | `array<object>` | **OPTIONAL** | 最多保留最近 10 条，元素结构同 `retrievalCheck` | 历史真机召回验收记录滚动审计列表。 | Retrieval Audit History |
 | `[].sourceSceneIds[]` | `array<string>` | **REQUIRED** | 场景 ID 数组 | 整理此文稿时参考的前序生活场景 ID 列表。 | Provenance References |
 | `[].sourceMessageIds[]` | `array<string>` | **REQUIRED** | 宿主消息 ID 数组 | 整理此文稿时参考的宿主聊天消息 ID 列表。 | Provenance References |
 | `[].timelineFacts` | `object` \| `null`| **OPTIONAL** | 符合 DailyFact 结构的子对象 | 嵌入整理文稿时提取的当日时间线事实快照。 | Embedded Facts |
+| `[].recordedThrough` | `integer` | **OPTIONAL** | Unix 毫秒时间戳 | 本篇文稿整理所覆盖的生活片段与消息截止时刻。 | Coverage Cutoff Timestamp |
 | `[].version` | `string` | **REQUIRED** | SemVer (如 `"0.3.0"`) | 生成文稿时的系统版本号。 | Provenance Version |
 
 ---
@@ -951,6 +985,8 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
     "summary": "8:15醒来并在厨房煮了大吉岭红茶。上午在大学图书馆南馆阅览美学书籍并摘录两页笔记。午后在神保町旧书店淘到昭和时代的抒情诗集。傍晚回家烹饪豆腐蛤蜊汤，心情轻快平和。",
     "createdAt": 1793612400000,
     "syncStatus": "written",
+    "syncError": "",
+    "pendingWrite": null,
     "memoryId": 8042,
     "graphStatus": "ready",
     "graphDraftJSON": null,
@@ -1536,6 +1572,8 @@ Layla Life Dashboard（生活手记）是部署于 Layla 智能体平台上的�
       "summary": "8:15醒来并在厨房煮了大吉岭红茶。上午在大学图书馆南馆阅览美学书籍并摘录两页笔记。午后在神保町旧书店淘到昭和时代的抒情诗集。傍晚回家烹饪豆腐蛤蜊汤，心情轻快平和。",
       "createdAt": 1793612400000,
       "syncStatus": "written",
+      "syncError": "",
+      "pendingWrite": null,
       "memoryId": 8042,
       "graphStatus": "ready",
       "graphDraftJSON": null,
